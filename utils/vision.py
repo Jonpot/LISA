@@ -2,9 +2,46 @@ import sys
 # For image processing
 import numpy as np
 import cv2
-from connect import RobotConnect
+from utils.connect import RobotConnect
 from scipy.spatial.transform import Rotation
 from kortex_api.autogen.messages import VisionConfig_pb2
+
+
+class BasicCamera:
+    """
+    This class simply shows the camera feed from the robot arm
+    """
+    def __init__(self, robot_connection: RobotConnect):
+        """
+        :param robot_connection: object that has established a connection to the arm
+        """
+        # Save the current attached api
+        self.robot_connection = robot_connection
+
+        # You don't need a connection to access the stream itself, just the ip
+        self.camera_stream = f"rtsp://{self.robot_connection.ip}/color"
+        # Video capture with opencv so you can process the images
+        self.video_capture = cv2.VideoCapture(self.camera_stream)
+
+    def show_camera(self):
+        """
+        This function will show the camera feed from the robot arm
+        """
+        try:
+            # Get the current frame from the video (there might be a tiny delay)
+            _, image = self.video_capture.read()
+            cv2.imshow("Camera feed", image)
+            cv2.waitKey(1)
+        except:
+            print('An error has occurred, restarting camera feed')
+
+    def end_camera(self):
+        """
+        Call this to end camera activities
+        :return:
+        """
+        self.video_capture.release()
+        cv2.destroyAllWindows()
 
 class BallDetector:
     """

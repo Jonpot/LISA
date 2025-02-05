@@ -1,5 +1,5 @@
-from connect import RobotConnect
-from arm_mover import ArmMover
+from utils.connect import RobotConnect
+from utils.arm_mover import ArmMover
 import cv2
 import keyboard
 

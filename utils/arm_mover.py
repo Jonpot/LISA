@@ -3,7 +3,7 @@ This class commands the robot to go to some position and catch an object
 """
 import numpy as np
 
-from connect import RobotConnect
+from utils.connect import RobotConnect
 from kortex_api.autogen.messages import Base_pb2
 import threading
 import time
@@ -75,7 +75,7 @@ class ArmMover:
 
         return check
 
-    def _execute_movement(self, action: Base_pb2.Action):
+    def _execute_movement(self, action: Base_pb2.Action): # type: ignore
         """
         This is the function that actually executes the movement
         """
