@@ -83,6 +83,10 @@ class AprilTagDetector:
                  the scale of the apriltag (for distance estimation), and the apriltag id
         """
         try:
+            # Video capture may have been released
+            if not self.video_capture.isOpened():
+                self.video_capture = cv2.VideoCapture(self.camera_stream)
+
             # Get the current frame from the video (there might be a tiny delay)
             _, image = self.video_capture.read()
 
@@ -104,6 +108,7 @@ class AprilTagDetector:
                 scale = distance / 3
 
                 image_center_x, image_center_y = image.shape[1] // 2, image.shape[0] // 2
+                #self.video_capture.release()
                 return x-image_center_x, y-image_center_y, scale, detections[0].getId(), image
             else:
                 return None, None, None, None

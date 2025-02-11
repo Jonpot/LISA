@@ -33,7 +33,7 @@ class ArmMover:
         cartesian_pose.theta_y = 0  # (degrees)
         cartesian_pose.theta_z = 90  # (degrees)
 
-    def arbitrary_movement(self, x, y, z, theta_x, theta_y, theta_z) -> bool:
+    def arbitrary_movement(self, x, y, z, theta_x, theta_y, theta_z, blocking = True) -> bool:
         """
         Move the arm to an arbitrary position
         :param x: x position in meters
@@ -57,7 +57,8 @@ class ArmMover:
         cartesian_pose.theta_y = theta_y
         cartesian_pose.theta_z = theta_z
 
-        success = self._execute_movement(action)
+        #print(f"Moving to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z})")
+        success = self._execute_movement(action, blocking)
         return success
 
 
@@ -76,7 +77,7 @@ class ArmMover:
 
         return check
 
-    def _execute_movement(self, action: Base_pb2.Action): # type: ignore
+    def _execute_movement(self, action: Base_pb2.Action, blocking=True): # type: ignore
         """
         This is the function that actually executes the movement
         """
@@ -91,7 +92,10 @@ class ArmMover:
         self.robot_connection.base.ExecuteAction(action) # Send the desired action to the robot
 
         print("Waiting for movement to finish ...")
-        finished = e.wait(self.TIMEOUT_DURATION)
+        if blocking:
+            finished = e.wait(self.TIMEOUT_DURATION)
+        else:
+            finished = True
         self.robot_connection.base.Unsubscribe(notification_handle)
 
         if finished:
@@ -168,29 +172,37 @@ class ArmMover:
         if success:
             self.move_gripper(0.05)
 
-    def move_relative_to_tcp(self, movement_vector, scale=0.1):
+    def move_relative_to_tcp(self, movement_vector, scale=0.01):
         """
         Moves the arm based on a movement vector relative to the TCP (tool center point).
         
         :param movement_vector: A 3D numpy array [dx, dy, dz] in the user's frame.
         """
+        # If robot is currently moving, pass
+        if self.robot_connection.base.GetArmState().active_state == Base_pb2.ARMSTATE_SERVOING_PLAYING_SEQUENCE:
+            return False
+
         # Get current TCP pose
         current_pose = self.robot_connection.base.GetMeasuredCartesianPose()
         robot_position = np.array([current_pose.x, current_pose.y, current_pose.z])
-        euler_angles = np.array([current_pose.theta_x, current_pose.theta_y, current_pose.theta_z])  # degrees
-
+        # multiply position by 100 
+        robot_position = robot_position * 100
+        euler_angles = np.array([current_pose.theta_x-90, current_pose.theta_y, current_pose.theta_z-90])  # degrees
+        #print(f"Euclidian position: {robot_position}\nEuler angles: {euler_angles}")
         # Convert Euler angles to a rotation matrix
         rotation_matrix = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
-
+        #print(f"Rotation matrix: {rotation_matrix}")
         # Transform movement vector into the robot's frame
         transformed_movement = rotation_matrix @ movement_vector
 
         # Compute new target position
         new_position = robot_position + transformed_movement * scale
-
+        new_position = new_position / 100
+        #print(f"Robot position: {robot_position}\nTransformed movement: {transformed_movement*scale}\nNew position: {new_position}")
         # Move the arm
+        #print(f"Args: {new_position[0], new_position[1], new_position[2], current_pose.theta_x, current_pose.theta_y, current_pose.theta_z}")
         return self.arbitrary_movement(new_position[0], new_position[1], new_position[2],
-                                       current_pose.theta_x, current_pose.theta_y, current_pose.theta_z)
+                                       current_pose.theta_x, current_pose.theta_y, current_pose.theta_z, blocking = False)
 
     def open_gripper(self):
         """
@@ -211,7 +223,7 @@ class ArmMover:
         Close the gripper gently
         :return: If operation was successful
         """
-        return self.move_gripper(0.3)
+        return self.move_gripper(0.23)
 
     def move_gripper(self, value):
         """
