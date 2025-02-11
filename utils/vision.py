@@ -43,6 +43,18 @@ class BasicCamera:
         self.video_capture.release()
         cv2.destroyAllWindows()
 
+    def take_picture(self):
+        """
+        This function will take a picture and return it
+        :return: image
+        """
+        try:
+            # Get the current frame from the video (there might be a tiny delay)
+            _, image = self.video_capture.read()
+            return image
+        except:
+            print('An error has occurred, restarting camera feed')
+
 class BallDetector:
     """
     This class uses the arm's camera to find a green ball and then calculate its center coordinates in the global frame
