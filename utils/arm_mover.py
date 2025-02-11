@@ -7,6 +7,7 @@ from utils.connect import RobotConnect
 from kortex_api.autogen.messages import Base_pb2
 import threading
 import time
+from scipy.spatial.transform import Rotation
 
 class ArmMover:
     def __init__(self, robot_connection: RobotConnect):
@@ -166,6 +167,30 @@ class ArmMover:
         # Open the gripper
         if success:
             self.move_gripper(0.05)
+
+    def move_relative_to_tcp(self, movement_vector, scale=0.1):
+        """
+        Moves the arm based on a movement vector relative to the TCP (tool center point).
+        
+        :param movement_vector: A 3D numpy array [dx, dy, dz] in the user's frame.
+        """
+        # Get current TCP pose
+        current_pose = self.robot_connection.base.GetMeasuredCartesianPose()
+        robot_position = np.array([current_pose.x, current_pose.y, current_pose.z])
+        euler_angles = np.array([current_pose.theta_x, current_pose.theta_y, current_pose.theta_z])  # degrees
+
+        # Convert Euler angles to a rotation matrix
+        rotation_matrix = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
+
+        # Transform movement vector into the robot's frame
+        transformed_movement = rotation_matrix @ movement_vector
+
+        # Compute new target position
+        new_position = robot_position + transformed_movement * scale
+
+        # Move the arm
+        return self.arbitrary_movement(new_position[0], new_position[1], new_position[2],
+                                       current_pose.theta_x, current_pose.theta_y, current_pose.theta_z)
 
     def open_gripper(self):
         """
