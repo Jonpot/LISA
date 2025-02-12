@@ -7,7 +7,8 @@ import numpy as np
 from utils.connect import RobotConnect
 from utils.vision import AprilTagDetector
 from utils.arm_mover import ArmMover
-
+import time
+import math
 
 # Parameters
 ip = "192.168.2.9"
@@ -34,15 +35,14 @@ if not home_status:
     print("Failed to move to home position")
     robot_connection.close_connection()
     exit()
-import time
-import math
+
 frame_count = 0
 current_position_in_list = 2 # home position
 while True:
     # Detect the apriltag
-    frame_count = 0
     detection_information = camera.detect_apriltag()
     if detection_information[0] is not None:
+        frame_count = 0
         y = detection_information[0] * -1
         z = detection_information[1] * -1
         #y = 0
@@ -54,7 +54,8 @@ while True:
         mover.move_relative_to_tcp([x, y, z])
         
         # if x, y, z very small, then we are at target, break!
-        if abs(z) < 5:
+        print(z)
+        if abs(z) < 8:
             break
 
         # Mover code isn't ready yet, just draw the circle on a canvas
@@ -72,15 +73,14 @@ while True:
         _, image = camera.video_capture.read()
         ## Show the image with a big red border to indicate no apriltag
         image = cv2.copyMakeBorder(image, 100, 100, 100, 100, cv2.BORDER_CONSTANT, value=(0, 0, 255))
-
         # move in different positions if 10 frames have passed
-        if frame_count >= 60:
+        if frame_count >= 30:
             next_position = (current_position_in_list+1) % 4
             position = positions_list[next_position]
             print(f"Moving to position {next_position}")
             mover.arbitrary_movement(position[0], position[1], position[2], position[3], position[4], position[5])
             current_position_in_list = next_position
-        frame_count = 0
+            frame_count = 0
 
         cv2.imshow("AprilTag Detection", image)
     

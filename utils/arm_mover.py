@@ -251,7 +251,7 @@ class ArmMover:
             start = time.time()
             current_time = time.time()
             while current_time - start < self.gripper_timeout:
-                print(f"Current value: {current_value}, target value: {value}")
+                #print(f"Current value: {current_value}, target value: {value}")
                 gripper_measure = self.robot_connection.base.GetMeasuredGripperMovement(gripper_request)
                 current_value = gripper_measure.finger[0].value
                 if current_value >= value:
