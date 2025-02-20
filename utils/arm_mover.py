@@ -47,6 +47,15 @@ class ArmMover:
         self.positions_list = [self.sentry_position1, self.sentry_position2, self.sentry_position3, self.sentry_position4]
         self.current_position = 2
 
+    def robot_position(self) -> list[float]:
+        """
+        Returns the current position of the robot and euler angles
+        :return: [x, y, z, theta_x, theta_y, theta_z]
+        """
+        current_pose = self.robot_connection.base.GetMeasuredCartesianPose()
+        return [current_pose.x, current_pose.y, current_pose.z,
+                current_pose.theta_x, current_pose.theta_y, current_pose.theta_z]
+
     def arbitrary_movement(self, x, y, z, theta_x, theta_y, theta_z, blocking = True) -> bool:
         """
         Move the arm to an arbitrary position
@@ -75,7 +84,7 @@ class ArmMover:
         success = self._execute_movement(action, blocking)
         return success
 
-    def position_movement(self, position: list[int], blocking = True) -> bool:
+    def move_to_pose(self, position: list[int], blocking = True) -> bool:
         """
         Move the arm to a pre-defined position
         :param position: list of 6 integers representing the position
@@ -136,11 +145,11 @@ class ArmMover:
             return False
 
         # Get current TCP pose
-        current_pose = self.robot_connection.base.GetMeasuredCartesianPose()
-        robot_position = np.array([current_pose.x, current_pose.y, current_pose.z])
+        current_pose = self.robot_position()
+        robot_position = np.array([current_pose[0], current_pose[1], current_pose[2]])
         robot_position = robot_position * 100 # multiply position by 100 (robot uses m, cm are more intuitive)
         
-        euler_angles = np.array([current_pose.theta_x-90, current_pose.theta_y, current_pose.theta_z-90])  # degrees
+        euler_angles = np.array([current_pose[3]-90, current_pose[4], current_pose[5]-90])  # degrees
         if debug:
             print(f"Euclidian position: {robot_position}\nEuler angles: {euler_angles}")
         
@@ -261,7 +270,7 @@ class ArmMover:
         """
         Move the robot to the current position in the list
         """
-        self.position_movement(self.positions_list[self.current_position])
+        self.move_to_pose(self.positions_list[self.current_position])
 
     def _move_to_next_position(self):
         """
@@ -271,7 +280,7 @@ class ArmMover:
         self.current_position = (self.current_position + 1) % len(self.positions_list)
         self._move_to_current_position()
 
-    def scan_for_apriltag(self, camera: AprilTagDetector, id: int) -> list[float, float, float, int]:
+    def scan_for_apriltag(self, camera: AprilTagDetector, id: int) -> dict[str, int|float|np.ndarray]:
         """
         Scans for an apriltag with a specific ID
         :param camera: AprilTagDetector object
@@ -280,6 +289,13 @@ class ArmMover:
         """
         frame_count = 0
         starting_pos = self.current_position
+
+        # Try to start at the current position to avoid unnecessary movement
+        self._move_to_current_position()
+        detection = camera.detect_apriltag(id)
+        if detection is not None:
+            return detection
+
         self._move_to_next_position()
         while self.current_position != starting_pos:
             # Detect the apriltag
@@ -296,6 +312,49 @@ class ArmMover:
 
         print("Failed to find apriltag in scene.")
         return None
+
+    def scan_for_unseen_apriltag(self,
+                                  camera: AprilTagDetector,
+                                  seen: set[int]) -> dict[str, int|float|np.ndarray]:
+        """
+        Similar to scan_for_apriltag, but searches for unseen apriltags. When
+        a view has unseen apriltags, it will return the first of them.
+        If all views have been exhausted, without finding any unseen apriltags,
+        it will return None.
+
+        :param camera: AprilTagDetector object
+        :param seen: Set of seen apriltags
+        :return: The detection if an unseen apriltag was found, or None if all views have been exhausted
+        """
+        frame_count = 0
+        starting_pos = self.current_position
+
+        # Try to start at the current position to avoid unnecessary movement
+        self._move_to_current_position()
+        detections = camera.detect_apriltags()
+        for detection in detections:
+            if detection['id'] not in seen:
+                return detection
+
+        self._move_to_next_position()
+        while self.current_position != starting_pos:
+            # Detect the apriltag
+            detections = camera.detect_apriltags()
+            for detection in detections:
+                if detection['id'] not in seen:
+                    return detection
+
+            frame_count += 1
+            # Move in different positions if 10 frames have passed
+            # We do this in case the camera was blurry or the apriltag was not yet in the field of view
+            if frame_count >= 10:
+                self._move_to_next_position()
+                frame_count = 0
+
+        print("Failed to find unseen apriltag in scene.")
+        return None
+
+
 
     def approach_apriltag_detection(self,
                                     camera: AprilTagDetector,
@@ -374,15 +433,15 @@ class ArmMover:
 
         # Move to the home position
         self._move_to_current_position() # back up directly first
-        self.position_movement(self.home)
-        self.position_movement(self.object_dock)
+        self.move_to_pose(self.home)
+        self.move_to_pose(self.object_dock)
         self.open_gripper()
-        self.position_movement(self.home)
+        self.move_to_pose(self.home)
         return True
 
-    def retrieve_apriltag(self, camera: AprilTagDetector, id: int, display_movement: bool = False, debug: bool = False) -> bool:
+    def find_and_retrieve_apriltag(self, camera: AprilTagDetector, id: int, display_movement: bool = False, debug: bool = False) -> bool:
         """
-        Retrieve the apriltag with a specific ID
+        Scans the scene for and retrieves the apriltag with a specific ID
         :param camera: AprilTagDetector object
         :param id: ID of the apriltag
         :return: If the operation was successful

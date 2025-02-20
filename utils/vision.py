@@ -75,7 +75,7 @@ class AprilTagDetector:
         self.detector = apriltag()
         self.detector.addFamily("tag25h9")
 
-    def detect_apriltags(self) -> list[dict[str: int|float|np.ndarray]]:
+    def detect_apriltags(self) -> list[dict[str, int|float|np.ndarray]]:
         """
         This function will look for all apriltags in the camera video stream
 
@@ -120,7 +120,7 @@ class AprilTagDetector:
             print('An error has occurred, restarting detection')
 
 
-    def detect_apriltag(self, id: int) -> dict[str: int|float|np.ndarray]:
+    def detect_apriltag(self, id: int) -> dict[str, int|float|np.ndarray]:
         """
         This function will look for specific apriltag in the camera video stream
 
