@@ -1,6 +1,7 @@
 """
 This class commands the robot to go to some position and catch an object
 """
+import cv2
 import numpy as np
 
 from utils.connect import RobotConnect
@@ -8,6 +9,8 @@ from kortex_api.autogen.messages import Base_pb2
 import threading
 import time
 from scipy.spatial.transform import Rotation
+
+from utils.vision import AprilTagDetector
 
 class ArmMover:
     def __init__(self, robot_connection: RobotConnect):
@@ -32,6 +35,17 @@ class ArmMover:
         cartesian_pose.theta_x = 180  # (degrees)
         cartesian_pose.theta_y = 0  # (degrees)
         cartesian_pose.theta_z = 90  # (degrees)
+
+
+        # Common Positions
+        self.home = [0.57, 0.00, 0.42, 90, 0, 90] # position 3
+        self.object_dock = [0.80, -0.04, 0.04, 90, 0, 90]
+        self.sentry_position1 = [0.42, -0.40, 0.42, 90, 0, 46]
+        self.sentry_position2 = [0.53, -0.23, 0.42, 90, 0, 66]
+        self.sentry_position3 = self.home
+        self.sentry_position4 = [0.54, 0.20, 0.42, 90, 0, 110]
+        self.positions_list = [self.sentry_position1, self.sentry_position2, self.sentry_position3, self.sentry_position4]
+        self.current_position = 2
 
     def arbitrary_movement(self, x, y, z, theta_x, theta_y, theta_z, blocking = True) -> bool:
         """
@@ -61,6 +75,13 @@ class ArmMover:
         success = self._execute_movement(action, blocking)
         return success
 
+    def position_movement(self, position: list[int], blocking = True) -> bool:
+        """
+        Move the arm to a pre-defined position
+        :param position: list of 6 integers representing the position
+        :return: if the operation was successful
+        """
+        return self.arbitrary_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
 
     def _check_for_end_or_abort(self, e):
         """Return a closure checking for END or ABORT notifications
@@ -104,7 +125,7 @@ class ArmMover:
             print("Timeout on action notification wait")
         return finished # Returns if the action was successful before the timeout
 
-    def move_relative_to_tcp(self, movement_vector, scale=0.01):
+    def move_relative_to_tcp(self, movement_vector, scale: float=0.01, debug: bool = False):
         """
         Moves the arm based on a movement vector relative to the TCP (tool center point).
         
@@ -117,22 +138,29 @@ class ArmMover:
         # Get current TCP pose
         current_pose = self.robot_connection.base.GetMeasuredCartesianPose()
         robot_position = np.array([current_pose.x, current_pose.y, current_pose.z])
-        # multiply position by 100 
-        robot_position = robot_position * 100
+        robot_position = robot_position * 100 # multiply position by 100 (robot uses m, cm are more intuitive)
+        
         euler_angles = np.array([current_pose.theta_x-90, current_pose.theta_y, current_pose.theta_z-90])  # degrees
-        #print(f"Euclidian position: {robot_position}\nEuler angles: {euler_angles}")
+        if debug:
+            print(f"Euclidian position: {robot_position}\nEuler angles: {euler_angles}")
+        
         # Convert Euler angles to a rotation matrix
         rotation_matrix = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
-        #print(f"Rotation matrix: {rotation_matrix}")
+        if debug:
+            print(f"Rotation matrix: {rotation_matrix}")
+        
         # Transform movement vector into the robot's frame
         transformed_movement = rotation_matrix @ movement_vector
 
         # Compute new target position
         new_position = robot_position + transformed_movement * scale
-        new_position = new_position / 100
-        #print(f"Robot position: {robot_position}\nTransformed movement: {transformed_movement*scale}\nNew position: {new_position}")
+        new_position = new_position / 100 # Convert back to meters
+        if debug:
+            print(f"Robot position: {robot_position}\nTransformed movement: {transformed_movement*scale}\nNew position: {new_position}")
+
         # Move the arm
-        #print(f"Args: {new_position[0], new_position[1], new_position[2], current_pose.theta_x, current_pose.theta_y, current_pose.theta_z}")
+        if debug:
+            print(f"Args: {new_position[0], new_position[1], new_position[2], current_pose.theta_x, current_pose.theta_y, current_pose.theta_z}")
         return self.arbitrary_movement(new_position[0], new_position[1], new_position[2],
                                        current_pose.theta_x, current_pose.theta_y, current_pose.theta_z, blocking = False)
 
@@ -229,3 +257,139 @@ class ArmMover:
             return False
 
 
+    def _move_to_current_position(self):
+        """
+        Move the robot to the current position in the list
+        """
+        self.position_movement(self.positions_list[self.current_position])
+
+    def _move_to_next_position(self):
+        """
+        Move the robot to the next position in the list
+        """
+        self._move_to_current_position()
+        self.current_position = (self.current_position + 1) % len(self.positions_list)
+        self._move_to_current_position()
+
+    def scan_for_apriltag(self, camera: AprilTagDetector, id: int) -> list[float, float, float, int]:
+        """
+        Scans for an apriltag with a specific ID
+        :param camera: AprilTagDetector object
+        :param id: ID of the apriltag
+        :return: If the apriltag was found
+        """
+        frame_count = 0
+        starting_pos = self.current_position
+        self._move_to_next_position()
+        while self.current_position != starting_pos:
+            # Detect the apriltag
+            detection = camera.detect_apriltag(id)
+            if detection is not None:
+                return detection
+
+            frame_count += 1
+            # Move in different positions if 10 frames have passed
+            # We do this in case the camera was blurry or the apriltag was not yet in the field of view
+            if frame_count >= 10:
+                self._move_to_next_position()
+                frame_count = 0
+
+        print("Failed to find apriltag in scene.")
+        return None
+
+    def approach_apriltag_detection(self,
+                                    camera: AprilTagDetector,
+                                    detection: dict,
+                                    threshold: float = 8,
+                                    display_movement: bool = False,
+                                    debug: bool = False) -> bool:
+        """
+        Approach the apriltag detection
+        :param camera: AprilTagDetector object
+        :param detection: Detection information
+        :return: If the operation was successful
+        """
+
+        num_failed_attempts = 0
+        x = ((-1 * detection['scale']) + 40) * 17 # 17 is a scaling factor determined experimentally. 40 represents the distance from the camera to the tcp
+        y = detection['y'] * -1
+        z = detection['z'] * -1
+        while abs(x) > threshold:            
+            if debug:
+                print(f"Raw detection: {x, y, z}")
+            self.move_relative_to_tcp([x, y, z]) # NOT blocking
+
+            if display_movement:
+                # Mover code isn't ready yet, just draw the circle on a canvas
+                # convert to RGB
+                image = cv2.cvtColor(detection['image'], cv2.COLOR_GRAY2BGR)
+                image_size = image.shape
+                y *= -1
+                z *= -1
+                y += image_size[1] / 2
+                z += image_size[0] / 2
+                cv2.circle(image, (int(y), int(z)), 10, (0, 255, 0))
+                cv2.imshow("AprilTag Detection", image)
+
+            new_detection = camera.detect_apriltag(detection['id'])
+            if new_detection is not None:
+                detection = new_detection
+
+                y = detection['y'] * -1
+                z = detection['z'] * -1
+                x = ((-1 * detection['scale']) + 40) * 17 
+
+                num_failed_attempts = 0
+            else:
+                num_failed_attempts += 1
+                if num_failed_attempts >= 30:
+                    # For 30 frames we haven't seen the apriltag. Likely out of view.
+                    print("Lost apriltag during approach for 30 frames.")
+                    return False
+        return True
+
+    def retrieve_apriltag_detection(self,
+                                    camera: AprilTagDetector,
+                                    detection: dict,
+                                    display_movement: bool = False,
+                                    debug: bool = False) -> bool:
+        """
+        Retrieve the apriltag
+        :param camera: AprilTagDetector object
+        :param detection: Detection information
+        :return: If the operation was successful
+        """
+        # Move to the apriltag
+        num_failed_attempts = 0
+        while not self.approach_apriltag_detection(camera, detection, display_movement, debug):
+            num_failed_attempts += 1
+            self._move_to_current_position() # Back up and try again
+            if num_failed_attempts >= 3:
+                print("Failed to approach apriltag 3 times. Giving up.")
+                return False # We tried 3 times and failed
+            print("Failed to approach apriltag, reattempting")
+
+        # Close the gripper
+        self.close_gripper()
+
+        # Move to the home position
+        self._move_to_current_position() # back up directly first
+        self.position_movement(self.home)
+        self.position_movement(self.object_dock)
+        self.open_gripper()
+        self.position_movement(self.home)
+        return True
+
+    def retrieve_apriltag(self, camera: AprilTagDetector, id: int, display_movement: bool = False, debug: bool = False) -> bool:
+        """
+        Retrieve the apriltag with a specific ID
+        :param camera: AprilTagDetector object
+        :param id: ID of the apriltag
+        :return: If the operation was successful
+        """
+        detection = self.scan_for_apriltag(camera, id)
+        if detection is None:
+            return False
+
+        print("Found apriltag in scene, attempting to retrieve.")
+        return self.retrieve_apriltag_detection(camera, detection, display_movement, debug)

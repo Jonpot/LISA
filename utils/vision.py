@@ -75,12 +75,12 @@ class AprilTagDetector:
         self.detector = apriltag()
         self.detector.addFamily("tag25h9")
 
-    def detect_apriltag(self) -> tuple[float, float, float, int]:
+    def detect_apriltags(self) -> list[dict[str: int|float|np.ndarray]]:
         """
-        This function will look for an apriltag in the camera video stream
+        This function will look for all apriltags in the camera video stream
 
-        :return: coordinates of the apriltag in the global frame _relative to the center of the frame_,
-                 the scale of the apriltag (for distance estimation), and the apriltag id
+        :return: coordinates of all the apriltags in the global frame _relative to the center of the frame_,
+                 the scale of the apriltags (for distance estimation), and the apriltag ids
         """
         try:
             # Video capture may have been released
@@ -97,11 +97,12 @@ class AprilTagDetector:
             detections = self.detector.detect(image)
 
             # Get the center of the apriltag in the global frame
-            if len(detections) > 0:
-                point = detections[0].getCenter()
+            processed_detections = []
+            for detection in detections:
+                point = detection.getCenter()
                 x = point.x
                 y = point.y
-                corner = detections[0].getCorner(0)
+                corner = detection.getCorner(0)
                 c_x = corner.x
                 c_y = corner.y
                 distance = np.sqrt((c_x - x) ** 2 + (c_y - y) ** 2)
@@ -109,11 +110,29 @@ class AprilTagDetector:
 
                 image_center_x, image_center_y = image.shape[1] // 2, image.shape[0] // 2
                 #self.video_capture.release()
-                return x-image_center_x, y-image_center_y, scale, detections[0].getId(), image
-            else:
-                return None, None, None, None
+                processed_detections.append({'x': x-image_center_x,
+                        'y': y-image_center_y,
+                        'z': scale,
+                        'id': detection.getId(),
+                        'image': image})
+            return processed_detections
         except:
             print('An error has occurred, restarting detection')
+
+
+    def detect_apriltag(self, id: int) -> dict[str: int|float|np.ndarray]:
+        """
+        This function will look for specific apriltag in the camera video stream
+
+        :param id: id of the apriltag to be detected
+        :return: coordinates of the apriltag in the global frame _relative to the center of the frame_,
+                 the scale of the apriltag (for distance estimation), and the apriltag id
+        """
+        detected_tags = self.detect_apriltags()
+        for tag in detected_tags:
+            if tag['id'] == id:
+                return tag
+        return None
 
 
 
