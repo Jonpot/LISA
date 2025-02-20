@@ -104,74 +104,6 @@ class ArmMover:
             print("Timeout on action notification wait")
         return finished # Returns if the action was successful before the timeout
 
-
-    def object_tracking_position(self):
-        """
-        Move the arm to the pre-defined tracking position to maximize catching precision
-        :return: if the operation was successful
-        """
-        print("Moving to tracking position ...")
-        # The position has already been defined
-        track_success = self._execute_movement(self.track_action)
-        return track_success
-
-    def catch_target(self, point: np.ndarray):
-        """
-        From the 3D point estimated by the vision module, move to the ball's position
-        :param point: 3D numpy array
-        :return: boolean if the operation was successful
-        """
-        # Open the gripper
-        self.move_gripper(0)
-
-        # Save the x and y position of the ball
-        target_x = point[0]
-        target_y = point[1]
-
-        # Move to the object's vertical
-        prime = Base_pb2.Action()
-        prime.name = "Primed for target"
-        prime.application_data = ""
-        # Set the tracking pose
-        cartesian_pose = prime.reach_pose.target_pose  # Pass by reference
-        # Hardcoded
-        cartesian_pose.x = target_x  # (meters)
-        cartesian_pose.y = target_y  # (meters)
-        cartesian_pose.z = 0.2  # (meters)
-        cartesian_pose.theta_x = 180  # (degrees)
-        cartesian_pose.theta_y = 0  # (degrees)
-        cartesian_pose.theta_z = 90  # (degrees)
-
-        success = self._execute_movement(prime)
-
-        # If the arm has reached the target's vertical, go to target position
-        if success:
-            goto = Base_pb2.Action()
-            goto.name = "Go to target"
-            goto.application_data = ""
-            # Set the tracking pose
-            cartesian_pose = goto.reach_pose.target_pose  # Pass by reference
-            # Hardcoded
-            cartesian_pose.x = target_x  # (meters)
-            cartesian_pose.y = target_y  # (meters)
-            cartesian_pose.z = 0.02  # (meters)
-            cartesian_pose.theta_x = 180  # (degrees)
-            cartesian_pose.theta_y = 0  # (degrees)
-            cartesian_pose.theta_z = 90  # (degrees)
-            success = self._execute_movement(goto)
-
-        # Grasp the ball
-        if success:
-            success = self.move_gripper(0.3)
-
-        # Lift the ball
-        if success:
-            success = self._execute_movement(prime)
-
-        # Open the gripper
-        if success:
-            self.move_gripper(0.05)
-
     def move_relative_to_tcp(self, movement_vector, scale=0.01):
         """
         Moves the arm based on a movement vector relative to the TCP (tool center point).
@@ -250,6 +182,8 @@ class ArmMover:
             self.robot_connection.base.SendGripperCommand(gripper_command)
             start = time.time()
             current_time = time.time()
+            prior_value = None
+            same_count = 0
             while current_time - start < self.gripper_timeout:
                 #print(f"Current value: {current_value}, target value: {value}")
                 gripper_measure = self.robot_connection.base.GetMeasuredGripperMovement(gripper_request)
@@ -260,6 +194,19 @@ class ArmMover:
                     finger.value = 0
                     self.robot_connection.base.SendGripperCommand(gripper_command)
                     return True
+
+                # If the gripper can't close anymore, stop it
+                if prior_value == current_value:
+                    same_count += 1
+                    if same_count > 5:
+                        print("Gripper can't close anymore")
+                        finger.value = 0
+                        self.robot_connection.base.SendGripperCommand(gripper_command)
+                        return True # This is technically a success
+                else:
+                    same_count = 0
+                prior_value = current_value
+
                 current_time = time.time()
             return False
         # Open command
