@@ -5,6 +5,7 @@ import cv2
 from utils.connect import RobotConnect
 from scipy.spatial.transform import Rotation
 from kortex_api.autogen.messages import VisionConfig_pb2
+import time
 
 
 class BasicCamera:
@@ -75,23 +76,33 @@ class AprilTagDetector:
         self.detector = apriltag()
         self.detector.addFamily("tag25h9")
 
-    def detect_apriltags(self) -> list[dict[str, int|float|np.ndarray]]:
+    def detect_apriltags(self, release_after: bool = True, debug: bool = False, display: bool = False) -> list[dict[str, int|float|np.ndarray]]:
         """
         This function will look for all apriltags in the camera video stream
 
         :return: coordinates of all the apriltags in the global frame _relative to the center of the frame_,
                  the scale of the apriltags (for distance estimation), and the apriltag ids
         """
-        try:
+        attempt = 0
+
+        while attempt < 3:
+            print(f"Attempt {attempt}")
             # Video capture may have been released
             if not self.video_capture.isOpened():
                 self.video_capture = cv2.VideoCapture(self.camera_stream)
-
             # Get the current frame from the video (there might be a tiny delay)
             _, image = self.video_capture.read()
 
+            if image is None:
+                raise Exception("No image found")
+
+
             # Convert the image to grayscale (required for apriltag detection)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+            if display:
+                cv2.imshow("Apriltag detection", image)
+                cv2.waitKey(1)
 
             # Detect the apriltag
             detections = self.detector.detect(image)
@@ -109,18 +120,29 @@ class AprilTagDetector:
                 scale = distance / 3
 
                 image_center_x, image_center_y = image.shape[1] // 2, image.shape[0] // 2
-                #self.video_capture.release()
+                
                 processed_detections.append({'x': x-image_center_x,
-                        'y': y-image_center_y,
-                        'z': scale,
-                        'id': detection.getId(),
-                        'image': image})
-            return processed_detections
-        except:
-            print('An error has occurred, restarting detection')
+                                            'y': y-image_center_y,
+                                            'z': scale,
+                                            'id': detection.getId(),
+                                            'image': image})
+            
+            if release_after:
+                print('Releasing stream')
+                self.video_capture.release()
+            if len(processed_detections) > 0:
+                return processed_detections
+            
+            attempt += 1
+
+        if release_after:
+            print('Releasing stream')
+            self.video_capture.release()
+        return []
 
 
-    def detect_apriltag(self, id: int) -> dict[str, int|float|np.ndarray]:
+
+    def detect_apriltag(self, id: int, release_after:bool = True, debug: bool = False, display: bool = False) -> dict[str, int|float|np.ndarray]:
         """
         This function will look for specific apriltag in the camera video stream
 
@@ -128,8 +150,35 @@ class AprilTagDetector:
         :return: coordinates of the apriltag in the global frame _relative to the center of the frame_,
                  the scale of the apriltag (for distance estimation), and the apriltag id
         """
-        detected_tags = self.detect_apriltags()
+        detected_tags = self.detect_apriltags(release_after=release_after, debug=debug, display=display)
         for tag in detected_tags:
+            print(f"Detected tag with id {tag['id']}")
             if tag['id'] == id:
                 return tag
         return None
+
+    def detect_locate_and_display_apriltags(self, timeout: float = 30) -> None:
+        """
+        This function will look for all apriltags in the camera video stream and display them
+
+        :param timeout: time to run the function for (in seconds)
+
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            detections = self.detect_apriltags(debug=True)
+            if len(detections) == 0:
+                print('No apriltags detected')
+                continue
+
+            image = detections[0]['image']
+            for detection in detections:
+                x = int(detection['x']) + image.shape[1] // 2
+                y = int(detection['y']) + image.shape[0] // 2
+                scale = int(detection['z'])
+                cv2.circle(image, (x, y), scale, (255, 0, 0), 2)
+                # Also add a number of the id of the apriltag as text
+                cv2.putText(image, str(detection['id']), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            cv2.imshow("Apriltag detection", image)
+            cv2.waitKey(1)

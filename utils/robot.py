@@ -53,11 +53,13 @@ class Robot:
                 self.database: dict[str, LabObject] = {}
 
         # Move to home position
-        home_status = self.mover.move_to_pose(self.mover.home)
+        home_status = self.mover.move_to_pose(self.mover.home, blocking=True)
         if not home_status:
             print("Failed to move to home position, something is wrong. Aborting.")
             self.robot_connection.close_connection()
             exit()
+
+        self.mover.open_gripper()
 
     def exit(self):
         # Save the database
@@ -76,6 +78,7 @@ class Robot:
         Helper function to add an object to the database
         """
         # Inquire about this object
+        self.mover.waggle_gripper()
         object_name = input("What is this object? ")
         special_handling = input("Does this object require special handling? (y/n) ")
         special_handling = True if special_handling.lower() == "y" else False
@@ -98,18 +101,19 @@ class Robot:
         unseen_tag = self.mover.scan_for_unseen_apriltag(self.camera, seen_tags)
         while unseen_tag is not None:
             # Approach the tag, but not too close
-            self.mover.approach_apriltag_detection(self.camera, unseen_tag, threshold=20)
+            success = self.mover.approach_apriltag_detection(self.camera, unseen_tag, threshold=425)
 
             # Add the object to the database
-            self._add_object_to_database(unseen_tag['id'], self.mover.robot_position())
+            if success:
+                self._add_object_to_database(unseen_tag['id'], self.mover.robot_position())
+                seen_tags.add(unseen_tag['id'])
 
-            seen_tags.add(unseen_tag['id'])
             unseen_tag = self.mover.scan_for_unseen_apriltag(self.camera, seen_tags)
 
     def _get_object_from_db(self,
-                            name: str|None,
-                            pose: list[float]|None,
-                            id: int|None) -> LabObject:
+                            name: str|None = None,
+                            pose: list[float]|None = None,
+                            id: int|None = None) -> LabObject:
         """
         Helper function to get an object from the database
         """
@@ -141,7 +145,9 @@ class Robot:
         self.mover.move_to_pose(object.pose)
 
         # Verify the object is there
-        detection = self.camera.detect_apriltag(object.tag_id)
+        time.sleep(1)
+        print(f"Checking for object with tag id {object.tag_id}")
+        detection = self.camera.detect_apriltag(object.tag_id, display = True, debug= True)
         if detection is None:
             print("Object not found at the expected location, performing a more general search")
             self.mover.find_and_retrieve_apriltag(self.camera, object.tag_id)
@@ -149,12 +155,27 @@ class Robot:
             print("Object found at the expected location")
             self.mover.retrieve_apriltag_detection(self.camera, detection)
 
-    def return_to_shelf(self, object_name: str):
+    def return_to_shelf(self):
         """
         This function will return an object to the shelf
         """
+
+        # Go to object dock, detect apriltags to figure out what is being returned
+        self.mover._move_to_current_position()
+        self.mover.move_to_pose(self.mover.object_dock)
+
+        # Detect apriltags
+        detections = self.camera.detect_apriltags()
+        self.mover.move_to_pose(self.mover.home)
+        if len(detections) == 0:
+            print("No objects detected at the object dock, returning to home")
+            return
+        
+        # Get the object that is being returned
+        detection_id = detections[0]['id']
+
         # Get the object from the database
-        object: LabObject = self._get_object_from_db(name=object_name)
+        object: LabObject = self._get_object_from_db(id=detection_id)
         if object is None:
             print("Object not found in the database")
             return
@@ -162,10 +183,13 @@ class Robot:
         # Verify the object's home is not occupied
         self.mover._move_to_current_position()
         self.mover.move_to_pose(object.pose)
-        detection = self.camera.detect_apriltag(object.tag_id)
-        if detection is not None:
+        detections = self.camera.detect_apriltags()
+        occupied = False
+        if len(detections) > 0:
             print("Object's home is occupied by another object, updating the database and backtracking")
-        occupied = True
+            occupied = True
+            detection = detections[0]
+            print(f"Detected tag with id {detection['id']}")
         
         while occupied:
             # Get the pose of the object that was actually there
@@ -186,10 +210,12 @@ class Robot:
             # Visit the prior pos to see if it's still occupied
             self.mover._move_to_current_position()
             self.mover.move_to_pose(object.pose)
-            detection = self.camera.detect_apriltag(object.tag_id)
-            if detection is None:
+            detections = self.camera.detect_apriltags()
+            if len(detections) == 0:
                 occupied = False
             else:
+                detection = detections[0]
+                print(f"Detected tag with id {detection['id']}")
                 continue
 
         # At this point, we know the object's home (even if that was updated) is not occupied
@@ -203,9 +229,11 @@ class Robot:
         self.mover.move_to_pose(object.pose)
 
         # Move forward ~10cm to ensure the object is placed on the shelf
-        forward_amount = 0.10 # this should be fine-tuned experimentally
-        self.mover.move_relative_to_tcp([0, 0, forward_amount])
+        forward_amount = 1000 # this should be fine-tuned experimentally
+        up_amount = 250
+        self.mover.move_relative_to_tcp([0, 0, up_amount], blocking=True)
+        self.mover.move_relative_to_tcp([forward_amount, 0, 0], blocking=True)
 
         self.mover.open_gripper()
-        self.mover.move_relative_to_tcp([0, 0, -forward_amount])
+        self.mover.move_relative_to_tcp([-forward_amount, 0, 0], blocking=True)
         self.mover.move_to_pose(self.mover.home)
