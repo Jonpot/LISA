@@ -1,4 +1,5 @@
 from utils.robot import Robot
+import os
 
 # Parameters
 ip = "192.168.2.9"
@@ -7,7 +8,9 @@ credentials = ("jpotter2", "MSAScapstone")
 
 robot = Robot(ip, port, credentials)
 
-robot.retrieve_from_shelf("GreenCup")
+id = os.sys.argv[1]
+
+robot.retrieve_from_shelf(id)
 
 # End the program
 robot.exit()

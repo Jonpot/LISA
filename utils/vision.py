@@ -7,7 +7,6 @@ from scipy.spatial.transform import Rotation
 from kortex_api.autogen.messages import VisionConfig_pb2
 import time
 
-
 class BasicCamera:
     """
     This class simply shows the camera feed from the robot arm
@@ -56,6 +55,53 @@ class BasicCamera:
         except:
             print('An error has occurred, restarting camera feed')
 
+import threading
+class VideoCaptureAsync:
+    def __init__(self, src=0, width=640, height=480):
+        self.src = src
+        self.cap = cv2.VideoCapture(self.src)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.grabbed, self.frame = self.cap.read()
+        self.started = False
+        self.read_lock = threading.Lock()
+
+    def set(self, var1, var2):
+        self.cap.set(var1, var2)
+
+    def start(self):
+        if self.started:
+            print('[!] Asynchroneous video capturing has already been started.')
+            return None
+        self.started = True
+        self.thread = threading.Thread(target=self.update, args=())
+        self.thread.start()
+        return self
+
+    def update(self):
+        while self.started:
+            grabbed, frame = self.cap.read()
+            with self.read_lock:
+                self.grabbed = grabbed
+                self.frame = frame
+                # Display the resulting frame
+                cv2.imshow('frame', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
+    def read(self):
+        with self.read_lock:
+            frame = self.frame.copy()
+            grabbed = self.grabbed
+        return grabbed, frame
+
+    def stop(self):
+        self.started = False
+        self.thread.join()
+
+    def __exit__(self, exec_type, exc_value, traceback):
+        self.cap.release()
+
 from robotpy_apriltag import AprilTagDetector as apriltag
 class AprilTagDetector:
     """
@@ -71,12 +117,13 @@ class AprilTagDetector:
         # You don't need a connection to access the stream itself, just the ip
         self.camera_stream = f"rtsp://{self.robot_connection.ip}/color"
         # Video capture with opencv so you can process the images
-        self.video_capture = cv2.VideoCapture(self.camera_stream)
+        self.video_capture = VideoCaptureAsync(src=self.camera_stream)
+        self.video_capture.start()
 
         self.detector = apriltag()
         self.detector.addFamily("tag25h9")
 
-    def detect_apriltags(self, release_after: bool = True, debug: bool = False, display: bool = False) -> list[dict[str, int|float|np.ndarray]]:
+    def detect_apriltags(self, debug: bool = False) -> list[dict[str, int|float|np.ndarray]]:
         """
         This function will look for all apriltags in the camera video stream
 
@@ -86,11 +133,9 @@ class AprilTagDetector:
         attempt = 0
 
         while attempt < 3:
-            print(f"Attempt {attempt}")
-            # Video capture may have been released
-            if not self.video_capture.isOpened():
-                self.video_capture = cv2.VideoCapture(self.camera_stream)
-            # Get the current frame from the video (there might be a tiny delay)
+            if debug:
+                print(f"Attempt {attempt}")
+            
             _, image = self.video_capture.read()
 
             if image is None:
@@ -99,10 +144,6 @@ class AprilTagDetector:
 
             # Convert the image to grayscale (required for apriltag detection)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-            if display:
-                cv2.imshow("Apriltag detection", image)
-                cv2.waitKey(1)
 
             # Detect the apriltag
             detections = self.detector.detect(image)
@@ -127,22 +168,16 @@ class AprilTagDetector:
                                             'id': detection.getId(),
                                             'image': image})
             
-            if release_after:
-                print('Releasing stream')
-                self.video_capture.release()
             if len(processed_detections) > 0:
                 return processed_detections
             
             attempt += 1
 
-        if release_after:
-            print('Releasing stream')
-            self.video_capture.release()
         return []
 
 
 
-    def detect_apriltag(self, id: int, release_after:bool = True, debug: bool = False, display: bool = False) -> dict[str, int|float|np.ndarray]:
+    def detect_apriltag(self, id: int, debug: bool = False) -> dict[str, int|float|np.ndarray]:
         """
         This function will look for specific apriltag in the camera video stream
 
@@ -150,9 +185,10 @@ class AprilTagDetector:
         :return: coordinates of the apriltag in the global frame _relative to the center of the frame_,
                  the scale of the apriltag (for distance estimation), and the apriltag id
         """
-        detected_tags = self.detect_apriltags(release_after=release_after, debug=debug, display=display)
+        detected_tags = self.detect_apriltags(debug=debug)
         for tag in detected_tags:
-            print(f"Detected tag with id {tag['id']}")
+            if debug:
+                print(f"Detected tag with id {tag['id']}")
             if tag['id'] == id:
                 return tag
         return None
@@ -182,3 +218,5 @@ class AprilTagDetector:
 
             cv2.imshow("Apriltag detection", image)
             cv2.waitKey(1)
+        
+        self.video_capture.stop()

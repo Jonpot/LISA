@@ -39,7 +39,8 @@ class ArmMover:
 
         # Common Positions
         self.home = [0.57, 0.00, 0.42, 90, 0, 90] # position 3
-        self.object_dock = [0.80, -0.04, 0.10, 90, 0, 90]
+        #self.object_dock = [0.80, -0.04, 0.10, 90, 0, 90] # OLD POSITION
+        self.object_dock = [-0.24, 0.45, 0.09, 90, 0, 171] # New position on second table
         self.sentry_position1 = [0.42, -0.30, 0.42, 90, 0, 46]
         self.sentry_position2 = [0.53, -0.13, 0.42, 90, 0, 66]
         self.sentry_position3 = self.home
@@ -52,6 +53,10 @@ class ArmMover:
                                self.sentry_position5, self.sentry_position6, self.sentry_position7, self.sentry_position8]
         self.current_position = 2
 
+
+        self.correction_forward_amount = 1000 # this should be fine-tuned experimentally
+        self.correction_up_amount = 250
+
     def robot_position(self) -> list[float]:
         """
         Returns the current position of the robot and euler angles
@@ -61,7 +66,7 @@ class ArmMover:
         return [current_pose.x, current_pose.y, current_pose.z,
                 current_pose.theta_x, current_pose.theta_y, current_pose.theta_z]
 
-    def arbitrary_movement(self, x, y, z, theta_x, theta_y, theta_z, blocking = True) -> bool:
+    def arbitrary_cartesian_movement(self, x, y, z, theta_x, theta_y, theta_z, blocking = True) -> bool:
         """
         Move the arm to an arbitrary position
         :param x: x position in meters
@@ -89,30 +94,79 @@ class ArmMover:
         success = self._execute_movement(action, blocking)
         return success
 
+    def arbitrary_angular_movement(self, theta_1, theta_2, theta_3, theta_4, theta_5, theta_6, blocking = True) -> bool:
+        """
+        Move the arm to an arbitrary position
+        :param theta_1: joint 1 angle in degrees
+        :param theta_2: joint 2 angle in degrees
+        :param theta_3: joint 3 angle in degrees
+        :param theta_4: joint 4 angle in degrees
+        :param theta_5: joint 5 angle in degrees
+        :param theta_6: joint 6 angle in degrees
+        :return: if the operation was successful
+        """
+        action = Base_pb2.Action()
+        action.name = "Arbitrary movement"
+        action.application_data = ""
+        # Set the tracking pose
+        joint_angles = action.reach_joint_angles.joint_angles
+        
+        actuator_count = self.robot_connection.base.GetActuatorCount()
+        angles = [theta_1, theta_2, theta_3, theta_4, theta_5, theta_6]
+        for joint_id in range(actuator_count.count):
+            joint_angle = action.reach_joint_angles.joint_angles.joint_angles.add()
+            joint_angle.joint_identifier = joint_id
+            joint_angle.value = angles[joint_id]
+
+        #print(f"Moving to position ({theta_1}, {theta_2}, {theta_3}, {theta_4}, {theta_5}, {theta_6})")
+        success = self._execute_movement(action, blocking)
+        return success
+
     def move_to_pose(self, position: list[int], blocking = True) -> bool:
         """
         Move the arm to a pre-defined position
         :param position: list of 6 integers representing the position
         :return: if the operation was successful
         """
-        return self.arbitrary_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+        return self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
 
-    def _check_for_end_or_abort(self, e):
+    def move_to_object_dock(self, blocking = True) -> bool:
+        """
+        Move the arm to the object dock position. Because the object dock is sometimes complicated to get to, this
+        uses angular movement to get to the object dock position.
+        :return: if the operation was successful
+        """
+        self.move_to_pose(self.home, blocking)
+        self.arbitrary_angular_movement(225, 12, 230, 0, 55, 90)
+        return self.move_to_pose(self.object_dock, blocking)
+        
+
+    def move_home_from_dock(self, blocking = True) -> bool:
+        """
+        Move the arm from the object dock to the home position
+        :return: if the operation was successful
+        """
+        self.arbitrary_angular_movement(225, 12, 230, 0, 55, 90)
+        self.arbitrary_angular_movement(0, 15, 230, 0, 55, 90)
+        return self.move_to_pose(self.home, blocking)
+
+    def _check_for_end_or_abort(self, e, debug=False):
         """Return a closure checking for END or ABORT notifications
         Arguments:
         e -- event to signal when the action is completed
             (will be set when an END or ABORT occurs)
         """
         def check(notification, e=e):
-            print("EVENT : " + \
-                  Base_pb2.ActionEvent.Name(notification.action_event))
+            if debug:
+                print("EVENT : " + \
+                      Base_pb2.ActionEvent.Name(notification.action_event))
             if notification.action_event == Base_pb2.ACTION_END \
                     or notification.action_event == Base_pb2.ACTION_ABORT:
                 e.set()
 
         return check
 
-    def _execute_movement(self, action: Base_pb2.Action, blocking=True): # type: ignore
+    def _execute_movement(self, action: Base_pb2.Action, blocking=True, debug=False): # type: ignore
         """
         This is the function that actually executes the movement
         """
@@ -123,10 +177,12 @@ class ArmMover:
             Base_pb2.NotificationOptions()
         )
 
-        print("Executing action")
+        if debug:
+            print("Executing action")
         self.robot_connection.base.ExecuteAction(action) # Send the desired action to the robot
 
-        print("Waiting for movement to finish ...")
+        if debug:
+            print("Waiting for movement to finish ...")
         if blocking:
             finished = e.wait(self.TIMEOUT_DURATION)
         else:
@@ -134,7 +190,8 @@ class ArmMover:
         self.robot_connection.base.Unsubscribe(notification_handle)
 
         if finished:
-            print("Cartesian movement completed")
+            if debug:
+                print("Cartesian movement completed")
         else:
             print("Timeout on action notification wait")
         return finished # Returns if the action was successful before the timeout
@@ -176,7 +233,7 @@ class ArmMover:
         if debug:
             print(f"Args: {new_position[0], new_position[1], new_position[2], current_pose[3], current_pose[4], current_pose[5]}")
 
-        return self.arbitrary_movement(new_position[0], new_position[1], new_position[2],
+        return self.arbitrary_cartesian_movement(new_position[0], new_position[1], new_position[2],
                                        current_pose[3], current_pose[4], current_pose[5], blocking = blocking)
 
     def open_gripper(self):
@@ -205,14 +262,13 @@ class ArmMover:
         Waggle the gripper
         :return: If operation was successful
         """
-        # Open the gripper
         self.move_gripper(0.008)
-        self.move_gripper(0.015)
+        self.move_gripper(0.035)
         self.move_gripper(0.008)
-        self.move_gripper(0.015)
+        self.move_gripper(0.035)
         return True
 
-    def move_gripper(self, value):
+    def move_gripper(self, value, debug=False):
         """
         Open or close the gripper
         :param value: value in {0, 1}. 0 for open, 1 for closed.
@@ -240,7 +296,8 @@ class ArmMover:
             prior_value = None
             same_count = 0
             while current_time - start < self.gripper_timeout:
-                #print(f"Current value: {current_value}, target value: {value}")
+                if debug:
+                    print(f"Current value: {current_value}, target value: {value}")
                 gripper_measure = self.robot_connection.base.GetMeasuredGripperMovement(gripper_request)
                 current_value = gripper_measure.finger[0].value
                 if current_value >= value:
@@ -271,7 +328,8 @@ class ArmMover:
             start = time.time()
             current_time = time.time()
             while current_time - start < self.gripper_timeout:
-                print(f"Current value: {current_value}, target value: {value}")
+                if debug:
+                    print(f"Current value: {current_value}, target value: {value}")
                 gripper_measure = self.robot_connection.base.GetMeasuredGripperMovement(gripper_request)
                 current_value = gripper_measure.finger[0].value
                 if current_value <= value:
@@ -299,7 +357,7 @@ class ArmMover:
         self.current_position = (self.current_position + 1) % len(self.positions_list)
         self._move_to_current_position()
 
-    def scan_for_apriltag(self, camera: AprilTagDetector, id: int, debug: bool = False, display_movement: bool = False) -> dict[str, int|float|np.ndarray]:
+    def scan_for_apriltag(self, camera: AprilTagDetector, id: int, debug: bool = False) -> dict[str, int|float|np.ndarray]:
         """
         Scans for an apriltag with a specific ID
         :param camera: AprilTagDetector object
@@ -310,14 +368,14 @@ class ArmMover:
 
         # Try to start at the current position to avoid unnecessary movement
         self._move_to_current_position()
-        detection = camera.detect_apriltag(id, debug=debug, display=display_movement)
+        detection = camera.detect_apriltag(id, debug=debug)
         if detection is not None:
             return detection
 
         self._move_to_next_position()
         while self.current_position != starting_pos:
             # Detect the apriltag
-            detection = camera.detect_apriltag(id, debug=debug, display=display_movement)
+            detection = camera.detect_apriltag(id, debug=debug)
             if detection is not None:
                 return detection
 
@@ -366,8 +424,7 @@ class ArmMover:
     def approach_apriltag_detection(self,
                                     camera: AprilTagDetector,
                                     detection: dict,
-                                    threshold: float = 280,
-                                    display_movement: bool = False,
+                                    threshold: float = 260,
                                     debug: bool = False) -> bool:
         """
         Approach the apriltag detection
@@ -382,18 +439,19 @@ class ArmMover:
         y = detection['x'] * -1
         z = detection['y'] * -1
         while abs(x) > threshold: 
-            print(f"Approaching apriltag, x: {x}, y: {y}, z: {z}, threshold: {abs(x)} is greater than {threshold}")  
             if debug:
+                print(f"Approaching apriltag, x: {x}, y: {y}, z: {z}, threshold: {abs(x)} is greater than {threshold}")  
                 print(f"Raw detection: {x, y, z}")
 
             # only approach if y and z are relatively cenetered
             if abs(y) > 50 or abs(z) > 50:
-                print(f'Y or Z is too far from center, not approaching. y: {y}, z: {z}')
+                if debug:
+                    print(f'Y or Z is too far from center, not approaching. y: {y}, z: {z}')
                 self.move_relative_to_tcp([0, y, z])
             else:
                 self.move_relative_to_tcp([x, y, z]) # NOT blocking
 
-            new_detection = camera.detect_apriltag(detection['id'], release_after=True, display = display_movement)
+            new_detection = camera.detect_apriltag(detection['id'])
             if new_detection is not None:
                 detection = new_detection
 
@@ -406,15 +464,16 @@ class ArmMover:
                 num_failed_attempts += 1
                 if num_failed_attempts >= 30:
                     # For 30 frames we haven't seen the apriltag. Likely out of view.
-                    print("Lost apriltag during approach for 30 frames.")
+                    if debug:
+                        print("Lost apriltag during approach for 30 frames.")
                     return False
-        print(f"Approaching apriltag, x: {x}, y: {y}, z: {z}, threshold: {abs(x)} is less than(?) {threshold}")  
+        if debug:
+            print(f"Approaching apriltag, x: {x}, y: {y}, z: {z}, threshold: {abs(x)} is less than(?) {threshold}")  
         return True
 
     def retrieve_apriltag_detection(self,
                                     camera: AprilTagDetector,
                                     detection: dict,
-                                    display_movement: bool = False,
                                     debug: bool = False) -> bool:
         """
         Retrieve the apriltag
@@ -424,7 +483,7 @@ class ArmMover:
         """
         # Move to the apriltag
         num_failed_attempts = 0
-        while not self.approach_apriltag_detection(camera, detection, display_movement=display_movement, debug=debug):
+        while not self.approach_apriltag_detection(camera, detection, debug=debug):
             num_failed_attempts += 1
             self._move_to_current_position() # Back up and try again
             if num_failed_attempts >= 3:
@@ -436,23 +495,32 @@ class ArmMover:
         self.close_gripper()
 
         # Move to the home position
+        self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
+        self.move_relative_to_tcp([-self.correction_forward_amount, 0, 0], blocking=True)
         self._move_to_current_position() # back up directly first
         self.move_to_pose(self.home)
-        self.move_to_pose(self.object_dock)
+        self.move_to_object_dock()
+        
+        # Move forward ~10cm to ensure the object is placed on the dock
+        self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
+        self.move_relative_to_tcp([self.correction_forward_amount, 0, 0], blocking=True)
+
         self.open_gripper()
-        self.move_to_pose(self.home)
+        self.move_relative_to_tcp([-self.correction_forward_amount, 0, 0], blocking=True)
+        self.move_home_from_dock()
+
         return True
 
-    def find_and_retrieve_apriltag(self, camera: AprilTagDetector, id: int, display_movement: bool = False, debug: bool = True) -> bool:
+    def find_and_retrieve_apriltag(self, camera: AprilTagDetector, id: int, debug: bool = True) -> bool:
         """
         Scans the scene for and retrieves the apriltag with a specific ID
         :param camera: AprilTagDetector object
         :param id: ID of the apriltag
         :return: If the operation was successful
         """
-        detection = self.scan_for_apriltag(camera, id, debug=debug, display_movement=display_movement)
+        detection = self.scan_for_apriltag(camera, id, debug=debug)
         if detection is None:
             return False
 
         print("Found apriltag in scene, attempting to retrieve.")
-        return self.retrieve_apriltag_detection(camera, detection, display_movement, debug)
+        return self.retrieve_apriltag_detection(camera, detection, debug=debug)

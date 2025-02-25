@@ -68,6 +68,7 @@ class Robot:
             json.dump(jsonified, file)
 
         # Close the connection
+        self.camera.video_capture.stop()
         self.robot_connection.close_connection()
 
     def _add_object_to_database(self,
@@ -110,6 +111,8 @@ class Robot:
 
             unseen_tag = self.mover.scan_for_unseen_apriltag(self.camera, seen_tags)
 
+        self.camera.video_capture.stop()
+
     def _get_object_from_db(self,
                             name: str|None = None,
                             pose: list[float]|None = None,
@@ -147,13 +150,15 @@ class Robot:
         # Verify the object is there
         time.sleep(1)
         print(f"Checking for object with tag id {object.tag_id}")
-        detection = self.camera.detect_apriltag(object.tag_id, display = True, debug= True)
+        detection = self.camera.detect_apriltag(object.tag_id, debug= True)
         if detection is None:
             print("Object not found at the expected location, performing a more general search")
             self.mover.find_and_retrieve_apriltag(self.camera, object.tag_id)
         else:
             print("Object found at the expected location")
             self.mover.retrieve_apriltag_detection(self.camera, detection)
+
+        self.camera.video_capture.stop()
 
     def return_to_shelf(self):
         """
@@ -162,11 +167,11 @@ class Robot:
 
         # Go to object dock, detect apriltags to figure out what is being returned
         self.mover._move_to_current_position()
-        self.mover.move_to_pose(self.mover.object_dock)
+        self.mover.move_to_object_dock()
 
         # Detect apriltags
         detections = self.camera.detect_apriltags()
-        self.mover.move_to_pose(self.mover.home)
+        self.mover.move_home_from_dock()
         if len(detections) == 0:
             print("No objects detected at the object dock, returning to home")
             return
@@ -186,10 +191,17 @@ class Robot:
         detections = self.camera.detect_apriltags()
         occupied = False
         if len(detections) > 0:
-            print("Object's home is occupied by another object, updating the database and backtracking")
-            occupied = True
-            detection = detections[0]
-            print(f"Detected tag with id {detection['id']}")
+            print("Object's home might be occupied by another object, updating the database and backtracking")
+            for detection in detections:
+                # Check if the detection is in the center of the image and close (otherwise might just be in background)
+                print(f"Detected tag with id {detection['id']}, detection['x'] {detection['x']} detection['y'] {detection['y']} detection['z'] {detection['z']}")
+                if abs(detection['x']) < 50 and abs(detection['y']) < 50 and detection['z'] > 10:
+                    occupied = True
+                    detection = detections[0]
+                    print(f"Detected tag with id {detection['id']}")
+                    break
+            if not occupied:
+                print("Found detections, but none were in the center of the image and close. Continuing to return.")
         
         while occupied:
             # Get the pose of the object that was actually there
@@ -223,17 +235,22 @@ class Robot:
         self.mover._move_to_current_position()
         self.mover.move_to_pose(self.mover.home)
         self.mover.open_gripper()
-        self.mover.move_to_pose(self.mover.object_dock)
+        self.mover.move_to_object_dock()
+
+        detection = self.camera.detect_apriltag(detection_id, debug=True)
+        self.mover.approach_apriltag_detection(self.camera, detection)
         self.mover.close_gripper()
-        self.mover.move_to_pose(self.mover.home)
+        self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
+        
+        self.mover.move_home_from_dock()
         self.mover.move_to_pose(object.pose)
 
         # Move forward ~10cm to ensure the object is placed on the shelf
-        forward_amount = 1000 # this should be fine-tuned experimentally
-        up_amount = 250
-        self.mover.move_relative_to_tcp([0, 0, up_amount], blocking=True)
-        self.mover.move_relative_to_tcp([forward_amount, 0, 0], blocking=True)
+        self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
+        self.mover.move_relative_to_tcp([self.mover.correction_forward_amount, 0, 0], blocking=True)
 
         self.mover.open_gripper()
-        self.mover.move_relative_to_tcp([-forward_amount, 0, 0], blocking=True)
+        self.mover.move_relative_to_tcp([-self.mover.correction_forward_amount, 0, 0], blocking=True)
         self.mover.move_to_pose(self.mover.home)
+
+        self.camera.video_capture.stop()
