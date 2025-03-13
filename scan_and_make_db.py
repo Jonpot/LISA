@@ -7,7 +7,7 @@ credentials = ("jpotter2", "MSAScapstone")
 
 robot = Robot(ip, port, credentials, new_database=True)
 
-robot.scan_and_populate_database()
+robot.scan_and_populate_database_naive()
 
 # End the program
 robot.exit()

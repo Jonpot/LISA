@@ -88,7 +88,7 @@ class Robot:
         self.database[object_name] = LabObject(tag_id, pose)
         self.database[object_name].special_handling = special_handling
 
-    def scan_and_populate_database(self):
+    def scan_and_populate_database_naive(self):
         """
         This function will scan the environment for apriltags and populate the database
         """
