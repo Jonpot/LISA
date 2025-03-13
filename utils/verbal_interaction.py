@@ -45,7 +45,7 @@ class VerbalInteraction:
             # Initialize the WebRTC VAD with aggressiveness mode 2 (balanced sensitivity)
             self.vad = webrtcvad.Vad(2)
 
-    def speak(self, text: str):
+    def speak(self, text: str) -> None:
         print("SPEAK:", text)
         if self.speech:
             # Use text-to-speech API
@@ -131,20 +131,26 @@ class VerbalInteraction:
         print("HEARD:", transcription)
         return transcription
 
-    def think(self, prompt: str):
+    def think(self, prompt: str) -> None:
         if self.think_out_loud:
             self.speak(prompt)
         else:
             print("THINKING:", prompt)
 
-    def ask(self, prompt: str):
+    def ask(self, prompt: str) -> str:
         self.speak(prompt)
         return self.listen()
 
-    def reason(self, prompt: str):
+    def respond(self, prompt: str) -> str:
+        response = self.reason(prompt)
+        if response:
+            self.speak(response)
+        return response
+
+    def reason(self, prompt: str) -> str | None:
         if not self.reasoning:
             print("Reasoning is disabled.")
-            return
+            return None
 
         self.message_history.append({"role": "user", "content": prompt})
         self.message_history = self.message_history[-10:]
@@ -155,7 +161,7 @@ class VerbalInteraction:
         )
         assistant_response = completion.choices[0].message.content
         self.message_history.append({"role": "assistant", "content": assistant_response})
-        self.speak(assistant_response)
+        return assistant_response
 
 
 if __name__ == "__main__":
@@ -165,4 +171,4 @@ if __name__ == "__main__":
     user_input = vi.listen()
 
     # Process the user input via reasoning
-    vi.reason(user_input)
+    vi.respond(user_input)

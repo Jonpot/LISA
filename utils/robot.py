@@ -1,6 +1,14 @@
 import cv2
 import os
 import numpy as np
+
+import sys
+
+if sys.version_info.major == 3 and sys.version_info.minor >= 10:
+    import collections
+    setattr(collections, "MutableMapping", collections.abc.MutableMapping)
+    setattr(collections, "MutableSequence", collections.abc.MutableSequence)
+
 from utils.connect import RobotConnect
 from utils.vision import AprilTagDetector
 from utils.arm_mover import ArmMover
@@ -27,7 +35,7 @@ class Robot:
                  port: int,
                  credentials: tuple[str, str],
                  new_database: bool = False,
-                 vi_mode: list[bool] = [False, False, False, False],
+                 vi_mode: dict[str, bool] = {'speech':False, 'listening':False, 'reasoning':False, 'think_out_loud':False},
                  virtual_mode: bool = False):
         """
         :param ip: ip address of the robot
@@ -41,7 +49,10 @@ class Robot:
             self.robot_connection.create_connection()
             self.camera = AprilTagDetector(self.robot_connection)
             self.mover = ArmMover(self.robot_connection)
-        self.vi = VerbalInteraction(*vi_mode)
+        self.vi = VerbalInteraction(enable_speech=vi_mode['speech'],
+                                    enable_listening=vi_mode['listening'],
+                                    enable_reasoning=vi_mode['reasoning'],
+                                    think_out_loud=vi_mode['think_out_loud'])
 
         # Load/create the database
         if new_database:
@@ -129,12 +140,15 @@ class Robot:
         if name is not None:
             # Naive search requiring perfect match
             if name in self.database:
+                self.vi.speak(f"Certainly, I have an object named {name} in my database. I'll get it for you.")
                 return self.database[name]
             elif self.vi.reasoning:
-                self.vi.think("I don't have an object with that exact name in my database. Let me reason about what they might mean.")
+                self.vi.think(f"I don't have an object the exact name '{name}' in my database. Let me reason about what they might mean.")
                 name = self.vi.reason(f"A user is asking for an object named {name}. My database contains the following objects: {', '.join(self.database.keys())}. Which object should I retrieve? Return only the exact name of the object and no other text.")
                 if name in self.database:
-                    return self.database
+                    self.vi.think(f"Based on reasoning, I believe the user is asking for the object '{name}'.")
+                    self.vi.speak(f"Sounds like you want {name}. I'll get it for you.")
+                    return self.database[name]
         elif pose is not None:
             for object in self.database.values():
                 if object.pose == pose:
