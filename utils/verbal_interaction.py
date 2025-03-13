@@ -6,10 +6,11 @@ from openai import OpenAI
 import numpy as np
 
 class VerbalInteraction:
-    def __init__(self, enable_speech: bool = False, enable_listening: bool = False, enable_reasoning: bool = False):
+    def __init__(self, enable_speech: bool = False, enable_listening: bool = False, enable_reasoning: bool = False, think_out_loud: bool = False):
         self.speech = enable_speech
         self.listening = enable_listening
         self.reasoning = enable_reasoning
+        self.think_out_loud = think_out_loud
         self.message_history = []  # to store conversation history
 
         try:
@@ -129,6 +130,16 @@ class VerbalInteraction:
         )
         print("HEARD:", transcription)
         return transcription
+
+    def think(self, prompt: str):
+        if self.think_out_loud:
+            self.speak(prompt)
+        else:
+            print("THINKING:", prompt)
+
+    def ask(self, prompt: str):
+        self.speak(prompt)
+        return self.listen()
 
     def reason(self, prompt: str):
         if not self.reasoning:

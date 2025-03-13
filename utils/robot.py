@@ -4,6 +4,7 @@ import numpy as np
 from utils.connect import RobotConnect
 from utils.vision import AprilTagDetector
 from utils.arm_mover import ArmMover
+from utils.verbal_interaction import VerbalInteraction
 import time
 import math
 import json
@@ -25,7 +26,9 @@ class Robot:
                  ip: str,
                  port: int,
                  credentials: tuple[str, str],
-                 new_database: bool = False):
+                 new_database: bool = False,
+                 vi_mode: list[bool] = [False, False, False, False],
+                 virtual_mode: bool = False):
         """
         :param ip: ip address of the robot
         :param port: port of the robot
@@ -33,10 +36,12 @@ class Robot:
         :param new_database: whether or not to create a new database
         """
         # Create a connection to the robot
-        self.robot_connection = RobotConnect(ip, port, credentials)
-        self.robot_connection.create_connection()
-        self.camera = AprilTagDetector(self.robot_connection)
-        self.mover = ArmMover(self.robot_connection)
+        if not virtual_mode:
+            self.robot_connection = RobotConnect(ip, port, credentials)
+            self.robot_connection.create_connection()
+            self.camera = AprilTagDetector(self.robot_connection)
+            self.mover = ArmMover(self.robot_connection)
+        self.vi = VerbalInteraction(*vi_mode)
 
         # Load/create the database
         if new_database:
@@ -53,13 +58,14 @@ class Robot:
                 self.database: dict[str, LabObject] = {}
 
         # Move to home position
-        home_status = self.mover.move_to_pose(self.mover.home, blocking=True)
-        if not home_status:
-            print("Failed to move to home position, something is wrong. Aborting.")
-            self.robot_connection.close_connection()
-            exit()
+        if not virtual_mode:
+            home_status = self.mover.move_to_pose(self.mover.home, blocking=True)
+            if not home_status:
+                self.vi.speak("Failed to move to home position, something is wrong. Aborting.")
+                self.robot_connection.close_connection()
+                exit()
 
-        self.mover.open_gripper()
+            self.mover.open_gripper()
 
     def exit(self):
         # Save the database
@@ -80,9 +86,9 @@ class Robot:
         """
         # Inquire about this object
         self.mover.waggle_gripper()
-        object_name = input("What is this object? ")
-        special_handling = input("Does this object require special handling? (y/n) ")
-        special_handling = True if special_handling.lower() == "y" else False
+        object_name = self.vi.ask("What is this object?")
+        special_handling = self.vi.ask("Does this object require special handling? (y/n)")
+        special_handling = True if 'y' in special_handling.lower() else False
 
         # Add the object to the database
         self.database[object_name] = LabObject(tag_id, pose)
@@ -121,7 +127,14 @@ class Robot:
         Helper function to get an object from the database
         """
         if name is not None:
-            return self.database[name]
+            # Naive search requiring perfect match
+            if name in self.database:
+                return self.database[name]
+            elif self.vi.reasoning:
+                self.vi.think("I don't have an object with that exact name in my database. Let me reason about what they might mean.")
+                name = self.vi.reason(f"A user is asking for an object named {name}. My database contains the following objects: {', '.join(self.database.keys())}. Which object should I retrieve? Return only the exact name of the object and no other text.")
+                if name in self.database:
+                    return self.database
         elif pose is not None:
             for object in self.database.values():
                 if object.pose == pose:
@@ -140,7 +153,7 @@ class Robot:
          # Get the object from the database
         object: LabObject = self._get_object_from_db(name=object_name)
         if object is None:
-            print("Object not found in the database")
+            self.vi.speak(f"Hmm, {object_name} isn't in the database. I can't retrieve it.")
             return
 
         # Move to the object
@@ -149,13 +162,13 @@ class Robot:
 
         # Verify the object is there
         time.sleep(1)
-        print(f"Checking for object with tag id {object.tag_id}")
+        self.vi.think(f"Checking for object with tag id {object.tag_id}")
         detection = self.camera.detect_apriltag(object.tag_id, debug= True)
         if detection is None:
-            print("Object not found at the expected location, performing a more general search")
+            self.vi.think("Object not found at the expected location, performing a more general search")
             self.mover.find_and_retrieve_apriltag(self.camera, object.tag_id)
         else:
-            print("Object found at the expected location")
+            self.vi.think("Object found at the expected location")
             self.mover.retrieve_apriltag_detection(self.camera, detection)
 
         self.camera.video_capture.stop()
@@ -173,7 +186,7 @@ class Robot:
         detections = self.camera.detect_apriltags()
         self.mover.move_home_from_dock()
         if len(detections) == 0:
-            print("No objects detected at the object dock, returning to home")
+            self.vi.think("No objects detected at the object dock, returning to home")
             return
         
         # Get the object that is being returned
@@ -182,7 +195,7 @@ class Robot:
         # Get the object from the database
         object: LabObject = self._get_object_from_db(id=detection_id)
         if object is None:
-            print("Object not found in the database")
+            self.vi.speak("Object not found in the database")
             return
 
         # Verify the object's home is not occupied
@@ -191,27 +204,28 @@ class Robot:
         detections = self.camera.detect_apriltags()
         occupied = False
         if len(detections) > 0:
-            print("Object's home might be occupied by another object, updating the database and backtracking")
+            self.vi.think("Object's home might be occupied by another object, updating the database and backtracking")
             for detection in detections:
                 # Check if the detection is in the center of the image and close (otherwise might just be in background)
-                print(f"Detected tag with id {detection['id']}, detection['x'] {detection['x']} detection['y'] {detection['y']} detection['z'] {detection['z']}")
+                self.vi.think(f"Detected tag with id {detection['id']}, detection['x'] {detection['x']} detection['y'] {detection['y']} detection['z'] {detection['z']}")
                 if abs(detection['x']) < 50 and abs(detection['y']) < 50 and detection['z'] > 10:
                     occupied = True
                     detection = detections[0]
-                    print(f"Detected tag with id {detection['id']}")
+                    self.vi.think(f"Detected tag with id {detection['id']}")
                     break
             if not occupied:
-                print("Found detections, but none were in the center of the image and close. Continuing to return.")
+                self.vi.think("Found detections, but none were in the center of the image and close. Continuing to return.")
         
         while occupied:
             # Get the pose of the object that was actually there
             occupying_object: LabObject = self._get_object_from_db(id=detection['id'])
             if occupying_object is None:
-                print("New object detected, updating the database")
+                self.vi.think("New object detected, updating the database")
                 self._add_object_to_database(detection['id'], object.pose)
-                print("Database updated, but I don't know where to put this object. Returning to dock.")
+                self.vi.think("Database updated, but I don't know where to put this object. Returning to dock.")
                 self.mover._move_to_current_position()
                 self.mover.move_to_pose(self.mover.home)
+                self.vi.speak("While I was returning an object, I found a new object where this one should go. I added that one to my databse, but I don't know where to put this one. Please help me.")
                 return
 
             # Update the database
@@ -227,7 +241,7 @@ class Robot:
                 occupied = False
             else:
                 detection = detections[0]
-                print(f"Detected tag with id {detection['id']}")
+                self.vi.think(f"Detected tag with id {detection['id']}")
                 continue
 
         # At this point, we know the object's home (even if that was updated) is not occupied
