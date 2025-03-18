@@ -11,6 +11,8 @@ import time
 from scipy.spatial.transform import Rotation
 
 from utils.vision import AprilTagDetector
+import csv
+from datetime import datetime
 
 class ArmMover:
     def __init__(self, robot_connection: RobotConnect):
@@ -121,14 +123,49 @@ class ArmMover:
         #print(f"Moving to position ({theta_1}, {theta_2}, {theta_3}, {theta_4}, {theta_5}, {theta_6})")
         success = self._execute_movement(action, blocking)
         return success
-
-    def move_to_pose(self, position: list[int], blocking = True) -> bool:
+    
+    def move_to_pose(self, position: list[int], blocking=True, interval=0.1, duration=5) -> bool:
         """
         Move the arm to a pre-defined position
         :param position: list of 6 integers representing the position
+        :param blocking: if the operation should block until completion
+        :param interval: time interval in seconds to log the positions
+        :param duration: total duration in seconds to log the positions
         :return: if the operation was successful
         """
-        return self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+        log_entries = []
+
+        def log_positions():
+            start_time = time.time()
+            last_log_time = start_time
+            while time.time() - start_time < duration:
+                current_time = time.time()
+                if current_time - last_log_time >= interval:
+                    # Get the current timestamp with milliseconds
+                    timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+
+                    # Append the position and timestamp to the log entries list
+                    log_entries.append([timestamp] + position)
+
+                    # Update the last log time
+                    last_log_time = current_time
+
+        # Start the logging thread
+        logging_thread = threading.Thread(target=log_positions)
+        logging_thread.start()
+
+        # Start the movement
+        success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+
+        # Wait for the logging thread to finish
+        logging_thread.join()
+
+        # Write all log entries to a CSV file after the movement is complete
+        with open('positions_log.csv', mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerows(log_entries)
+
+        return success
 
     def move_to_object_dock(self, blocking = True) -> bool:
         """
@@ -524,3 +561,113 @@ class ArmMover:
 
         print("Found apriltag in scene, attempting to retrieve.")
         return self.retrieve_apriltag_detection(camera, detection, debug=debug)
+
+    def calculate_forbidden_ellipse(self) -> tuple[list[float], float, float, float, float]:
+        """
+        Returns the parameters of the forbidden ellipse based on known positions.
+        Hardcoded from:
+           Front: (0.494, 0.014, ~0.376) m,
+           Left: (0.272, 0.237, ~0.377) m,
+           Right: (0.277, -0.185, ~0.377) m,
+           Back (symmetry of front): (-0.494, 0.014, ~0.376) m.
+        Returns:
+           center_xy: [cx, cy]
+           a: major radius (x direction), b: minor radius (y direction)
+           z_min, z_max: allowable z range for the forbidden area.
+        """
+        center_xy = [0.0, 0.026]   # ( (0.494 + (-0.494))/2, (0.014+?)/2 ) simplified
+        a = 0.494                  # half front–back span
+        b = 0.211                  # half left–right span
+        z_center = 0.377
+        delta_z = 0.08             # tolerance in z
+        return center_xy, a, b, z_center - delta_z, z_center + delta_z
+
+    def is_path_safe_ellipse(self, start: list[float], end: list[float]) -> bool:
+        """
+        Checks whether the linear path from start to end avoids the forbidden ellipse.
+        Samples N points and uses a margin factor increased by an extra_margin delta.
+        """
+        center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
+        N = 40  # number of samples
+        base_margin = 1.1  
+        extra_margin = 0.2  # additional delta to increase safety margin
+        margin = base_margin + extra_margin
+        start_np = np.array(start[:3])
+        end_np = np.array(end[:3])
+        for t in np.linspace(0, 1, N):
+            sample = start_np + t * (end_np - start_np)
+            x, y, z = sample
+            ellipse_val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
+            if ellipse_val < margin and z >= z_min and z <= z_max:
+                return False
+        return True
+
+    def generate_partial_arc_waypoints(self, start: list[float], dest: list[float], num_wp: int = 4, extra_offset: float = 0.05) -> list[list[float]]:
+        """
+        Generate waypoints along a partial arc (the shorter arc between start and destination)
+        around the forbidden ellipse center. The arc is computed using the angles of start and dest 
+        relative to the ellipse center. This ensures we do not overshoot the destination.
+        """
+        import math
+        center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
+        # Optionally shift center_x if destination is positive
+        if dest[0] > 0:
+            center_xy[0] = max(center_xy[0], 0.1)
+        extra_delta = 0.02  # additional safety distance
+        
+        # Calculate radius R (fixed for arc) and z (midpoint)
+        R = (a + b) / 2 + extra_offset + extra_delta
+        z = (z_min + z_max) / 2
+        
+        # Compute the polar angle for start and destination (relative to center_xy)
+        def compute_angle(pt):
+            return math.atan2(pt[1] - center_xy[1], pt[0] - center_xy[0])
+        
+        theta_start = compute_angle(start)
+        theta_dest = compute_angle(dest)
+        
+        # Find shortest angular difference 
+        dtheta = theta_dest - theta_start
+        if dtheta > math.pi:
+            dtheta -= 2 * math.pi
+        elif dtheta < -math.pi:
+            dtheta += 2 * math.pi
+        
+        # Generate intermediate waypoints along the arc (including destination)
+        waypoints = []
+        for i in range(1, num_wp+1):
+            theta = theta_start + (dtheta * i / num_wp)
+            x = center_xy[0] + R * math.cos(theta)
+            y = center_xy[1] + R * math.sin(theta)
+            wp = [x, y, z, dest[3], dest[4], dest[5]]
+            waypoints.append(wp)
+        return waypoints
+
+    def plan_path_to_destination(self, dest: list[float]) -> bool:
+        """
+        Plans a safe linear path toward the destination.
+        If the direct path crosses the forbidden region, a partial arc (via generate_partial_arc_waypoints)
+        is used to approach the destination.
+        """
+        current_pose = self.robot_position()
+        if self.is_path_safe_ellipse(current_pose, dest):
+            print("Direct path is safe. Moving directly.")
+            result = self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2],
+                                                       dest[3], dest[4], dest[5])
+            if not result and not self.is_position_reachable(dest[0], dest[1], dest[2],
+                                                             dest[3], dest[4], dest[5]):
+                print("Direct movement failed due to IK solution failure; executing alternative path planning.")
+                return self.smart_path_planning(dest[0], dest[1], dest[2],
+                                                dest[3], dest[4], dest[5])
+            return result
+        else:
+            print("Direct path crosses forbidden area; generating partial arc waypoints.")
+            waypoints = self.generate_partial_arc_waypoints(current_pose, dest)
+            for idx, wp in enumerate(waypoints):
+                print(f"Moving to waypoint {idx+1}/{len(waypoints)}: {wp}")
+                if not self.arbitrary_cartesian_movement(wp[0], wp[1], wp[2], wp[3], wp[4], wp[5]):
+                    print("Failed at waypoint; aborting path.")
+                    return False
+            print("All waypoints reached. Moving to final destination.")
+            return self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2],
+                                                     dest[3], dest[4], dest[5])
