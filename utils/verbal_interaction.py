@@ -141,6 +141,41 @@ class VerbalInteraction:
         self.speak(prompt)
         return self.listen()
 
+    def ask_boolean(self, prompt: str) -> bool:
+        response = self.ask(prompt).lower()
+        if response == "y": # simple typing of 'y' or 'n' for yes or no
+            return True
+        elif response == "n":
+            return False
+        
+        # otherwise, likely processing spoken response
+        parsed_words = response.split()
+        affirmative_words = ["yes", "true", "1", "yeah", "yep", "yup", "sure", "ok", "okay", "ready", "continue"]
+        negative_words = ["no", "false", "0", "nope", "nah", "nay", "not", "never", "cancel"]
+        
+        # if any of the negative words are in the response, return False
+        # do this first for safety, in case the response contains both affirmative and negative words
+        for word in parsed_words:
+            if word.strip().lower() in negative_words:
+                self.think(f"I heard '{word}' in the response, so I'll assume you meant 'no'.")
+                return False
+            
+        # if any of the affirmative words are in the response, return True
+        for word in parsed_words:
+            if word.strip().lower() in affirmative_words:
+                self.think(f"I heard '{word}' in the response, so I'll assume you meant 'yes'.")
+                return True
+        
+        # if the response is not clear, ask again
+        if self.reasoning:
+            reasoning_response = self.reason(f"The user said '{response}'. Do you think this is an 'affirmative' or 'negative' or 'unclear' answer? Reply with only one of these words.")
+            if reasoning_response == "affirmative":
+                return True
+            elif reasoning_response == "negative":
+                return False
+
+        return self.ask_boolean(prompt)
+
     def respond(self, prompt: str) -> str:
         response = self.reason(prompt)
         if response:

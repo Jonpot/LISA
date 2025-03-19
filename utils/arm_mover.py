@@ -44,13 +44,14 @@ class ArmMover:
         self.sentry_position1 = [0.42, -0.30, 0.42, 90, 0, 46]
         self.sentry_position2 = [0.53, -0.13, 0.42, 90, 0, 66]
         self.sentry_position3 = self.home
-        self.sentry_position4 = [0.54, 0.10, 0.22, 90, 0, 110]
+        self.sentry_position4 = [0.54, 0.10, 0.42, 90, 0, 110]
         self.sentry_position5 = [0.42, -0.30, 0.22, 90, 0, 46]
         self.sentry_position6 = [0.53, -0.13, 0.22, 90, 0, 66]
         self.sentry_position7 = [0.57, 0.00, 0.22, 90, 0, 90]
         self.sentry_position8 = [0.54, 0.10, 0.22, 90, 0, 110]
-        self.positions_list = [self.sentry_position1, self.sentry_position2, self.sentry_position3, self.sentry_position4,
-                               self.sentry_position5, self.sentry_position6, self.sentry_position7, self.sentry_position8]
+        #self.positions_list = [self.sentry_position1, self.sentry_position2, self.sentry_position3, self.sentry_position4,
+        #                       self.sentry_position5, self.sentry_position6, self.sentry_position7, self.sentry_position8]
+        self.positions_list = [self.sentry_position6, self.sentry_position7, self.sentry_position8]
         self.current_position = 2
 
 
@@ -137,7 +138,7 @@ class ArmMover:
         :return: if the operation was successful
         """
         self.move_to_pose(self.home, blocking)
-        self.arbitrary_angular_movement(225, 12, 230, 0, 55, 90)
+        #self.arbitrary_angular_movement(225, 12, 230, 0, 55, 90)
         return self.move_to_pose(self.object_dock, blocking)
         
 
@@ -146,8 +147,8 @@ class ArmMover:
         Move the arm from the object dock to the home position
         :return: if the operation was successful
         """
-        self.arbitrary_angular_movement(225, 12, 230, 0, 55, 90)
-        self.arbitrary_angular_movement(0, 15, 230, 0, 55, 90)
+        #self.arbitrary_angular_movement(225, 12, 230, 0, 55, 90)
+        #self.arbitrary_angular_movement(0, 15, 230, 0, 55, 90)
         return self.move_to_pose(self.home, blocking)
 
     def _check_for_end_or_abort(self, e, debug=False):
@@ -266,6 +267,8 @@ class ArmMover:
         self.move_gripper(0.035)
         self.move_gripper(0.008)
         self.move_gripper(0.035)
+        self.move_gripper(0.008)
+        self.move_gripper(0.035)
         return True
 
     def move_gripper(self, value, debug=False):
@@ -373,6 +376,7 @@ class ArmMover:
             return detection
 
         self._move_to_next_position()
+        time.sleep(0.5)
         while self.current_position != starting_pos:
             # Detect the apriltag
             detection = camera.detect_apriltag(id, debug=debug)

@@ -17,17 +17,90 @@ import time
 import math
 import json
 
-class LabObject:
-    def __init__(self, tag_id: int, pose: list[float]):
-        self.tag_id = tag_id
+class Position:
+    def __init__(self, name: str, pose: list[float], blocked_by: list[str] = []):
+        self.name = name
         self.pose = pose
-        self.special_handling = False
+        self.blocked_by = blocked_by
+        self.occupied = False
 
     def __str__(self):
-        return f"Tag ID: {self.tag_id}, Pose: {self.pose}, Special Handling: {self.special_handling}"
+        return f"Name: {self.name}, Pose: {self.pose}"
 
     def jsonify(self):
-        return {"tag_id": self.tag_id, "pose": self.pose, "special_handling": self.special_handling}
+        return {"name": self.name, "pose": self.pose, "blocked_by": self.blocked_by, "occupied": self.occupied}
+
+class LabObject:
+    def __init__(self, name: str, tag_id: int, position: str):
+        self.name = name
+        self.tag_id = tag_id
+        self.home_position = position
+        self.special_handling = False
+        self.current_position = position
+
+    def __str__(self):
+        return f"Tag ID: {self.tag_id}, Position: {self.home_position}, Special Handling: {self.special_handling}"
+
+    def jsonify(self):
+        return {"tag_id": self.tag_id, "position": self.home_position, "special_handling": self.special_handling}
+
+class Database:
+    def __init__(self):
+        self.lab_objects: dict[str, LabObject] = {}
+        self.positions: dict[str, Position] = {}
+
+    def point_in_cylinder(self, point: list[float], start: list[float], end: list[float], radius: float) -> bool:
+        """
+        Check if a point is inside a cylinder
+        :param point: the point to check
+        :param start: the start of the cylinder
+        :param end: the end of the cylinder
+        :param radius: the radius of the cylinder
+        :return: whether or not the point is in the cylinder
+        """
+        # Calculate the vector from the start to the end
+        vec = [end[0] - start[0], end[1] - start[1], end[2] - start[2]]
+        vec_mag = math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
+        vec = [vec[0] / vec_mag, vec[1] / vec_mag, vec[2] / vec_mag]
+
+        # Calculate the vector from the start to the point
+        point_vec = [point[0] - start[0], point[1] - start[1], point[2] - start[2]]
+
+        # Calculate the projection of the point vector onto the cylinder vector
+        projection = vec[0] * point_vec[0] + vec[1] * point_vec[1] + vec[2] * point_vec[2]
+
+        # Calculate the distance from the point to the cylinder vector
+        distance = math.sqrt(point_vec[0] ** 2 + point_vec[1] ** 2 + point_vec[2] ** 2 - projection ** 2)
+
+        return distance <= radius
+
+    def add_position(self, name: str, pose: list[float], vi: VerbalInteraction, force: bool = False):
+        # Check to see if the line drawn from this to the origin intersects with any other position
+        # (this is a cylinder, not a line, because the robot has a gripper which is thick)
+        blocking_positions = []
+        for position in self.positions.values():
+            if position.name == name:
+                continue
+            if self.point_in_cylinder(position.pose, pose, [0, 0, pose[2]], 0.1):
+                if force or vi.ask_boolean(f"I think that this position is blocked by {position.name}. Is that correct?"):
+                    blocking_positions.append(position.name)
+            elif self.point_in_cylinder(pose, position.pose, [0, 0, position.pose[2]], 0.1):
+                if force or vi.ask_boolean(f"I think that {position.name} is blocked by this position. Is that correct?"):
+                    position.blocked_by.append(name)
+
+        # Add the position to the database
+        self.positions[name] = Position(name, pose, blocked_by=[blocking_positions])
+        
+    def add_object(self, name: str, tag_id: int, position: str):
+        if position not in self.positions:
+            raise ValueError(f"Position {position} is not a valid position.")
+        self.lab_objects[name] = LabObject(name, tag_id, position)
+    
+    def get_pose(self, lab_object: LabObject) -> list[float]:
+        return self.positions[lab_object.home_position].pose
+
+    def jsonify(self):
+        return {'lab_objects': {key: value.jsonify() for key, value in self.lab_objects.items()}, 'positions': {key: value.jsonify() for key, value in self.positions.items()}}
 
 class Robot:
     def __init__(self, 
@@ -59,14 +132,30 @@ class Robot:
             if os.path.exists("database.json"):
                 os.remove("database.json")
 
-            self.database = {}
+            self.database = Database()
         else:
             if os.path.exists("database.json"):
                 with open("database.json", "r") as file:
                     jsonified = json.load(file)
-                    self.database = {key: LabObject(value["tag_id"], value["pose"]) for key, value in jsonified.items()}
+                    self.database = Database()
+                    
+                    for key, value in jsonified['positions'].items():
+                        self.database.add_position(key, value['pose'], self.vi, force=True)
+                        self.database.positions[key].blocked_by = value['blocked_by']
+                        self.database.positions[key].occupied = value['occupied']
+                    
+                    for key, value in jsonified['lab_objects'].items():
+                        self.database.add_object(key, value['tag_id'], value['position'])
             else:
-                self.database: dict[str, LabObject] = {}
+                self.database = Database()
+
+        # Ensure object dock is in the database
+        self.recent_calibration = False
+        if 'object_dock' not in self.database.positions:
+            self.vi.speak("I don't have an object dock in my database. We must launch calibration.")
+            self.calibrate_workspace()
+        
+        self.mover.object_dock = self.database.positions['object_dock'].pose
 
         # Move to home position
         if not virtual_mode:
@@ -81,8 +170,7 @@ class Robot:
     def exit(self):
         # Save the database
         with open("database.json", "w") as file:
-            jsonified = {key: value.jsonify() for key, value in self.database.items()}
-            json.dump(jsonified, file)
+            json.dump(self.database.jsonify(), file)
 
         # Close the connection
         self.camera.video_capture.stop()
@@ -102,8 +190,9 @@ class Robot:
         special_handling = True if 'y' in special_handling.lower() else False
 
         # Add the object to the database
-        self.database[object_name] = LabObject(tag_id, pose)
-        self.database[object_name].special_handling = special_handling
+        self.database.add_position(f'{object_name}_pos', pose, self.vi)
+        self.database.add_object(object_name, tag_id, f'{object_name}_pos')
+        self.database.lab_objects[object_name].special_handling = special_handling
 
     def scan_and_populate_database_naive(self):
         """
@@ -112,8 +201,8 @@ class Robot:
         
         # Aggregate seen tags from database
         seen_tags = set()
-        for tag in self.database.values():
-            seen_tags.add(tag.tag_id)
+        for lab_object in self.database.lab_objects.values():
+            seen_tags.add(lab_object.tag_id)
 
         # Scan the environment to add new tags
         unseen_tag = self.mover.scan_for_unseen_apriltag(self.camera, seen_tags)
@@ -130,8 +219,134 @@ class Robot:
 
         self.camera.video_capture.stop()
 
+    def identify_calibration_tag(self) -> int:
+        """
+        This function will identify the calibration tag
+        """
+        self.vi.speak("Please show me the tag of the calibration object.")
+        while True:
+            detections = []
+            while len(detections) == 0:
+                detections = self.camera.detect_apriltags()
+                # Remove tags already in database
+                detections = [detection for detection in detections if detection['id'] not in [tag.tag_id for tag in self.database.lab_objects.values()]]
+                if len(detections) == 0:
+                    continue
+                else:
+                    print(detections)
+
+            # Approach the tag, but not too close
+            success = self.mover.approach_apriltag_detection(self.camera, detections[0], threshold=425)
+            if not success:
+                self.vi.think("Failed to approach the tag, trying again.")
+            else:
+                self.mover.waggle_gripper()
+                if self.vi.ask_boolean("Is this the calibration object?"):
+                    return detections[0]['id']
+                else:
+                    continue
+
+    def calibrate_workspace(self):
+        """
+        This function will have the robot collaborate with a lab assistant to calibrate the workspace
+        """
+        # Move home
+        self.mover.move_to_pose(self.mover.home)
+
+        calibration_tag = self.identify_calibration_tag()
+
+        if 'object_dock' in self.database.positions:
+            if self.vi.ask_boolean("I already have the object dock in my database. Would you like to update it?"):
+                del self.database.positions['object_dock']
+
+        if 'object_dock' not in self.database.lab_objects:
+            if not self.vi.ask_boolean("Great! Go ahead and place the calibration object on the object dock for the first workspace, then let me know when you're ready to continue."):
+                self.vi.speak("Hm, sounds like you don't want to continue. I'm aborting the process.")
+                return
+        
+            self.vi.speak("Alright, I'm going to look for it now.")
+            detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
+            if detection is None:
+                self.vi.speak("I couldn't find the calibration object. Aborting.")
+
+            self.vi.think("I found the calibration object. I'm going to approach it now.")
+            self.mover.approach_apriltag_detection(self.camera, detection, threshold=425)
+            self.mover.waggle_gripper()
+            self.vi.think("This is the object dock, I'm updating my internal memory of this position.")
+            self.database.add_position("object_dock", self.mover.robot_position(), self.vi)
+            self.mover.object_dock = self.mover.robot_position()
+
+        while self.vi.ask_boolean("Would you like to add a new position to the database?"):
+            if not self.vi.ask_boolean("Great! Go ahead and place the calibration object on the position you want to save, then let me know when you're ready to continue."):
+                self.vi.speak("Hm, sounds like you don't want to continue. I'm aborting the process.")
+                break
+            
+            self.vi.speak("Alright, I'm going to look for it now.")
+            detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
+            while detection is None:
+                self.vi.think("I couldn't find the calibration object. I'm going to try again.")
+                detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
+
+            self.vi.think("I found the calibration object. I'm going to approach it now.")
+            self.mover.approach_apriltag_detection(self.camera, detection, threshold=425)
+            self.mover.waggle_gripper()
+            position_name = self.vi.ask("What is the name of this position?")
+            while position_name in self.database.positions:
+                position_name = self.vi.ask("That position is already in the database. Please provide a different name.")
+            self.vi.think(f"This is the {position_name}, I'm updating my internal memory of this position.")
+            self.database.add_position(position_name, self.mover.robot_position(), self.vi)
+        
+        self.recent_calibration = True
+
+    def scan_and_populate_database(self):
+        """
+        Works alongside a lab assistant to populate the database
+        """
+        # Move home
+        self.mover.move_to_pose(self.mover.home)
+
+        if self.vi.ask_boolean("Would you like to create a new database?"):
+            self.database = Database()
+
+        if not self.recent_calibration and self.vi.ask_boolean("Would you like to calibrate the workspace?"):
+            self.calibrate_workspace()
+        
+        while not self.vi.ask_boolean("Great! I've added all the positions to my database. Go ahead and populate the lab with objects and let me know when you're ready to continue."):
+            time.sleep(30)
+
+        self.vi.speak("Alright, I'm going to look for objects now.")
+
+        # Go to every position and scan for objects
+        for position in self.database.positions:
+            self.mover.move_to_pose(self.mover.home)
+            self.vi.think(f"Moving to {position}.")
+            self.mover.move_to_pose(self.database.positions[position].pose)
+            self.vi.think(f"Scanning {position} for objects.")
+            detections = self.camera.detect_apriltags()
+            for detection in detections:
+                self.vi.think(f"Detected object with tag id {detection['id']}.")
+                if self.vi.ask_boolean("Would you like to add this object to the database?"):
+                    name = self.vi.ask("What is the name of this object?")
+                    while name in self.database.lab_objects:
+                        name = self.vi.ask("That object is already in the database. Please provide a different name.")
+                    special_handling = self.vi.ask_boolean("Does this object require special handling?")
+                    self.database.add_object(name, detection['id'], position)
+                    self.database.lab_objects[name].special_handling = special_handling
+                    self.database.positions[position].occupied = True
+                else:
+                    self.vi.think("Okay, I won't add this object to the database.")
+
+        self.vi.speak("Great! I've added all the objects to my database.")
+
+        self.mover.move_to_pose(self.mover.home)
+
+        # Save the database
+        with open("database.json", "w") as file:
+            json.dump(self.database.jsonify(), file)
+
     def _get_object_from_db(self,
                             name: str|None = None,
+                            position: str|None = None,
                             pose: list[float]|None = None,
                             id: int|None = None) -> LabObject:
         """
@@ -139,53 +354,127 @@ class Robot:
         """
         if name is not None:
             # Naive search requiring perfect match
-            if name in self.database:
+            if name in self.database.lab_objects:
                 self.vi.speak(f"Certainly, I have an object named {name} in my database. I'll get it for you.")
-                return self.database[name]
+                return self.database.lab_objects[name]
             elif self.vi.reasoning:
                 self.vi.think(f"I don't have an object the exact name '{name}' in my database. Let me reason about what they might mean.")
-                name = self.vi.reason(f"A user is asking for an object named {name}. My database contains the following objects: {', '.join(self.database.keys())}. Which object should I retrieve? Return only the exact name of the object and no other text.")
-                if name in self.database:
+                name = self.vi.reason(f"A user is asking for an object named {name}. My database contains the following objects: {', '.join(self.database.lab_objects.keys())}. Which object should I retrieve? Return only the exact name of the object and no other text.")
+                if name in self.database.lab_objects:
                     self.vi.think(f"Based on reasoning, I believe the user is asking for the object '{name}'.")
                     self.vi.speak(f"Sounds like you want {name}. I'll get it for you.")
-                    return self.database[name]
+                    return self.database.lab_objects[name]
+        elif position is not None:
+            for lab_object_name, lab_object in self.database.lab_objects.items():
+                if self.database.lab_objects[lab_object_name].home_position == position:
+                    return lab_object
         elif pose is not None:
-            for object in self.database.values():
-                if object.pose == pose:
-                    return object
+            for lab_object_name, lab_object in self.database.lab_objects.items():
+                if self.database.positions[lab_object_name].pose == pose:
+                    return lab_object
         elif id is not None:
-            for object in self.database.values():
-                if object.tag_id == id:
-                    return object
+            for _, lab_object in self.database.lab_objects.items():
+                if lab_object.tag_id == id:
+                    return lab_object
 
         return None
+
+    def remove_blocking_object(self, blocking_object: LabObject):
+        """
+        Similar to retrieve_from_shelf, but doesn't perform a general search
+        if the object isn't found
+        """
+        # Move to the object
+        self.mover._move_to_current_position()
+        objective_position = self.database.get_pose(blocking_object)
+        self.mover.move_to_pose(objective_position)
+
+        # Verify the object is there
+        time.sleep(1)
+        self.vi.think(f"Checking for object with tag id {blocking_object.tag_id}")
+        detection = self.camera.detect_apriltag(blocking_object.tag_id, debug= True)
+        if detection is None:
+            self.vi.think("Object not found at the expected location.")
+            return
+
+        self.mover.retrieve_apriltag_detection(self.camera, detection)
+
+        # Mark this position as unoccupied
+        self.database.positions[blocking_object.home_position].occupied = False
+        # And the object's current position to "bench"
+        blocking_object.current_position = "bench"
 
     def retrieve_from_shelf(self, object_name: str):
         """
         This function will retrieve an object from a shelf according to the database
         """
          # Get the object from the database
-        object: LabObject = self._get_object_from_db(name=object_name)
-        if object is None:
+        lab_object: LabObject = self._get_object_from_db(name=object_name)
+        if lab_object is None:
             self.vi.speak(f"Hmm, {object_name} isn't in the database. I can't retrieve it.")
             return
 
+        # If the object isn't currently at it's home position, fail (not implemented behavior)
+        if lab_object.current_position != lab_object.home_position:
+            self.vi.speak(f"Sorry, I can't retrieve {object_name} right now. It's in use by another scientist.")
+
         # Move to the object
         self.mover._move_to_current_position()
-        self.mover.move_to_pose(object.pose)
+
+        objective_position = self.database.get_pose(lab_object)
+        blocking_positions: list[Position] = []
+        blocking_objects: dict[LabObject, Position] = {}
+        if len(self.database.positions[lab_object.home_position].blocked_by) > 0:
+            self.vi.think("This position can be obscured by other objects. I'll check to see if it's clear.")
+            for potential_blocker in self.database.positions[lab_object.home_position].blocked_by:
+                if self.database.positions[potential_blocker].occupied:
+                    blocking_positions.append(self.database.positions[potential_blocker])
+            if len(blocking_positions) > 0:
+                # sort them by the length of their blocked_by list, so we remove
+                # the front-most blocker first
+                blocking_positions.sort(key=lambda x: len(x.blocked_by))
+
+                # Now convert the positions into the object names at those positions
+                for position in blocking_positions:
+                    blocking_objects[self._get_object_from_db(position=position.name)] = position
+
+                # Now retrieve the objects blocking the way, one by one
+                for blocking_object, position in blocking_objects.items():
+                    self.vi.think(f"Object {blocking_object.name} is blocking the way. I'll remove it.")
+                    self.remove_blocking_object(blocking_object)
+                
+                self.vi.think("The way is clear now. I'll proceed to retrieve the object.")
+
+
+        self.mover.move_to_pose(objective_position)
 
         # Verify the object is there
         time.sleep(1)
-        self.vi.think(f"Checking for object with tag id {object.tag_id}")
-        detection = self.camera.detect_apriltag(object.tag_id, debug= True)
+        self.vi.think(f"Checking for object with tag id {lab_object.tag_id}")
+        detection = self.camera.detect_apriltag(lab_object.tag_id, debug= True)
         if detection is None:
             self.vi.think("Object not found at the expected location, performing a more general search")
-            self.mover.find_and_retrieve_apriltag(self.camera, object.tag_id)
+            success = self.mover.find_and_retrieve_apriltag(self.camera, lab_object.tag_id)
         else:
             self.vi.think("Object found at the expected location")
-            self.mover.retrieve_apriltag_detection(self.camera, detection)
+            success = self.mover.retrieve_apriltag_detection(self.camera, detection)
 
-        self.camera.video_capture.stop()
+        if success:
+            # Mark this position as unoccupied
+            self.database.positions[lab_object.home_position].occupied = False
+
+            # And the object's current position to "bench"
+            lab_object.current_position = "bench"
+
+
+        # If we removed a blocking object, we need to put it back
+        if len(blocking_objects) > 0:
+            self.vi.speak("I've retrieved the object, but I need to put the blocking objects back.")
+        while len(blocking_objects) > 0:
+            blocking_object, position = blocking_objects.popitem()
+            self.vi.speak(f"Please place the object {blocking_object.name} back at the object dock.")
+            self.vi.ask_boolean("Let me know when you're ready.")
+            self.return_to_shelf()
 
     def return_to_shelf(self):
         """
@@ -197,45 +486,69 @@ class Robot:
         self.mover.move_to_object_dock()
 
         # Detect apriltags
+        time.sleep(0.5)
         detections = self.camera.detect_apriltags()
-        self.mover.move_home_from_dock()
-        if len(detections) == 0:
+        while len(detections) == 0:
             self.vi.think("No objects detected at the object dock, returning to home")
-            return
+            detections = self.camera.detect_apriltags()
         
+        self.mover.move_home_from_dock()
         # Get the object that is being returned
         detection_id = detections[0]['id']
 
         # Get the object from the database
-        object: LabObject = self._get_object_from_db(id=detection_id)
-        if object is None:
+        lab_object: LabObject = self._get_object_from_db(id=detection_id)
+        if lab_object is None:
             self.vi.speak("Object not found in the database")
             return
+        
+        self.vi.think(f"Detected object with tag id {detection_id}, which is {lab_object.name}.")
 
         # Verify the object's home is not occupied
         self.mover._move_to_current_position()
-        self.mover.move_to_pose(object.pose)
-        detections = self.camera.detect_apriltags()
+
+        objective_position = self.database.get_pose(lab_object)
+        blocking_positions: list[Position] = []
+        blocking_objects: dict[LabObject, Position] = {}
+        if len(self.database.positions[lab_object.home_position].blocked_by) > 0:
+            self.vi.think("This position can be obscured by other objects. I'll check to see if it's clear.")
+            for potential_blocker in self.database.positions[lab_object.home_position].blocked_by:
+                if self.database.positions[potential_blocker].occupied:
+                    blocking_positions.append(self.database.positions[potential_blocker])
+            if len(blocking_positions) > 0:
+                # sort them by the length of their blocked_by list, so we remove
+                # the front-most blocker first
+                blocking_positions.sort(key=lambda x: len(x.blocked_by))
+
+                # Now convert the positions into the object names at those positions
+                for position in blocking_positions:
+                    blocking_objects[self._get_object_from_db(position=position.name)] = position
+
+                # Now retrieve the objects blocking the way, one by one
+                for blocking_object, position in blocking_objects.items():
+                    self.vi.think(f"Object {blocking_object.name} is blocking the way. I'll remove it.")
+                    self.vi.ask_boolean(f"I need to remove object {blocking_object.name} from the shelf. Please clear the object dock and let me know when you're ready.")
+                    self.remove_blocking_object(blocking_object)
+                    self.database.positions[blocking_object.home_position].occupied = False
+                
+                self.vi.think("The way is clear now. I'll proceed to retrieve the object.")
+
+        self.vi.think(f"Moving to {lab_object.name}'s home position.")
+        self.mover.move_to_pose(objective_position)
+        detections = self.camera.detect_immediate_apriltags()
         occupied = False
         if len(detections) > 0:
             self.vi.think("Object's home might be occupied by another object, updating the database and backtracking")
-            for detection in detections:
-                # Check if the detection is in the center of the image and close (otherwise might just be in background)
-                self.vi.think(f"Detected tag with id {detection['id']}, detection['x'] {detection['x']} detection['y'] {detection['y']} detection['z'] {detection['z']}")
-                if abs(detection['x']) < 50 and abs(detection['y']) < 50 and detection['z'] > 10:
-                    occupied = True
-                    detection = detections[0]
-                    self.vi.think(f"Detected tag with id {detection['id']}")
-                    break
-            if not occupied:
-                self.vi.think("Found detections, but none were in the center of the image and close. Continuing to return.")
+            occupied = True
+            detection = detections[0]
+            self.vi.think(f"Detected occupying tag with id {detection['id']}")
         
         while occupied:
             # Get the pose of the object that was actually there
             occupying_object: LabObject = self._get_object_from_db(id=detection['id'])
             if occupying_object is None:
                 self.vi.think("New object detected, updating the database")
-                self._add_object_to_database(detection['id'], object.pose)
+                self._add_object_to_database(detection['id'], self.database.get_pose(lab_object))
                 self.vi.think("Database updated, but I don't know where to put this object. Returning to dock.")
                 self.mover._move_to_current_position()
                 self.mover.move_to_pose(self.mover.home)
@@ -243,13 +556,13 @@ class Robot:
                 return
 
             # Update the database
-            prior_pos = occupying_object.pose
-            occupying_object.pose = object.pose
-            object.pose = prior_pos
+            prior_pos = occupying_object.home_position
+            occupying_object.home_position = lab_object.home_position
+            lab_object.home_position = prior_pos
 
             # Visit the prior pos to see if it's still occupied
             self.mover._move_to_current_position()
-            self.mover.move_to_pose(object.pose)
+            self.mover.move_to_pose(self.database.get_pose(occupying_object))
             detections = self.camera.detect_apriltags()
             if len(detections) == 0:
                 occupied = False
@@ -260,18 +573,24 @@ class Robot:
 
         # At this point, we know the object's home (even if that was updated) is not occupied
         # Move to the object from the object dock to this location
+        self.vi.think("Moving to the object dock to retrieve the object.")
         self.mover._move_to_current_position()
         self.mover.move_to_pose(self.mover.home)
         self.mover.open_gripper()
+        if len(blocking_objects) > 0:
+            self.vi.ask_boolean("Please place the object back at the object dock and let me know when you're ready.")
         self.mover.move_to_object_dock()
 
         detection = self.camera.detect_apriltag(detection_id, debug=True)
+        while detection is None:
+            detection = self.camera.detect_apriltag(detection_id, debug=True)
         self.mover.approach_apriltag_detection(self.camera, detection)
         self.mover.close_gripper()
         self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
         
         self.mover.move_home_from_dock()
-        self.mover.move_to_pose(object.pose)
+        self.vi.think(f"Moving to {lab_object.name}'s home position.")
+        self.mover.move_to_pose(self.database.get_pose(lab_object))
 
         # Move forward ~10cm to ensure the object is placed on the shelf
         self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
@@ -281,4 +600,17 @@ class Robot:
         self.mover.move_relative_to_tcp([-self.mover.correction_forward_amount, 0, 0], blocking=True)
         self.mover.move_to_pose(self.mover.home)
 
-        self.camera.video_capture.stop()
+        # Mark this position as occupied
+        self.database.positions[lab_object.home_position].occupied = True
+
+        # And the object's current position to the position it was returned to
+        lab_object.current_position = lab_object.home_position        
+
+        # If we removed a blocking object, we need to put it back
+        if len(blocking_objects) > 0:
+            self.vi.speak("I've retrieved the object, but I need to put the blocking objects back.")
+        while len(blocking_objects) > 0:
+            blocking_object, position = blocking_objects.popitem()
+            self.vi.speak(f"Please place the object {blocking_object.name} back at the object dock.")
+            self.vi.ask_boolean("Let me know when you're ready.")
+            self.return_to_shelf()
