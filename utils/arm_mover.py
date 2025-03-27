@@ -578,27 +578,29 @@ class ArmMover:
         center_xy = [0.0, 0.026]   # ( (0.494 + (-0.494))/2, (0.014+?)/2 ) simplified
         a = 0.494                  # half front–back span
         b = 0.211                  # half left–right span
-        z_center = 0.377
-        delta_z = 0.08             # tolerance in z
+        z_center = 0.37
+        delta_z = 0.12             # tolerance in z
         return center_xy, a, b, z_center - delta_z, z_center + delta_z
 
     def is_path_safe_ellipse(self, start: list[float], end: list[float]) -> bool:
         """
         Checks whether the linear path from start to end avoids the forbidden ellipse.
-        Samples N points and uses a margin factor increased by an extra_margin delta.
+        Samples N points and uses a margin factor increased by an extra_margin plus an extra tolerance for x,y and z.
         """
         center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
+        z_extra = 0.02  # additional tolerance in z
+        xy_extra = 0.01  # additional tolerance in x and y
         N = 40  # number of samples
         base_margin = 1.1  
-        extra_margin = 0.2  # additional delta to increase safety margin
-        margin = base_margin + extra_margin
+        extra_margin = 0.2  # additional delta for XY
+        margin = base_margin + extra_margin + xy_extra
         start_np = np.array(start[:3])
         end_np = np.array(end[:3])
         for t in np.linspace(0, 1, N):
             sample = start_np + t * (end_np - start_np)
             x, y, z = sample
             ellipse_val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
-            if ellipse_val < margin and z >= z_min and z <= z_max:
+            if ellipse_val < margin and (z_min - z_extra <= z <= z_max + z_extra):
                 return False
         return True
 
@@ -643,31 +645,121 @@ class ArmMover:
             waypoints.append(wp)
         return waypoints
 
-    def plan_path_to_destination(self, dest: list[float]) -> bool:
+    def plan_path_to_destination(self, dest: list[float], debug: bool = False) -> bool:
         """
         Plans a safe linear path toward the destination.
-        If the direct path crosses the forbidden region, a partial arc (via generate_partial_arc_waypoints)
-        is used to approach the destination.
+        If a direct path is safe, the arm moves directly.
+        Otherwise, A* path planning is used.
+        When debug is True, outputs the simulated path (x, y values) and waits for key input before executing.
         """
         current_pose = self.robot_position()
         if self.is_path_safe_ellipse(current_pose, dest):
-            print("Direct path is safe. Moving directly.")
-            result = self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2],
-                                                       dest[3], dest[4], dest[5])
-            if not result and not self.is_position_reachable(dest[0], dest[1], dest[2],
-                                                             dest[3], dest[4], dest[5]):
-                print("Direct movement failed due to IK solution failure; executing alternative path planning.")
-                return self.smart_path_planning(dest[0], dest[1], dest[2],
-                                                dest[3], dest[4], dest[5])
-            return result
+            if debug:
+                print("Direct path is safe. Moving directly.")
+            return self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2], dest[3], dest[4], dest[5])
         else:
-            print("Direct path crosses forbidden area; generating partial arc waypoints.")
-            waypoints = self.generate_partial_arc_waypoints(current_pose, dest)
-            for idx, wp in enumerate(waypoints):
-                print(f"Moving to waypoint {idx+1}/{len(waypoints)}: {wp}")
-                if not self.arbitrary_cartesian_movement(wp[0], wp[1], wp[2], wp[3], wp[4], wp[5]):
-                    print("Failed at waypoint; aborting path.")
-                    return False
-            print("All waypoints reached. Moving to final destination.")
-            return self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2],
-                                                     dest[3], dest[4], dest[5])
+            if debug:
+                print("Direct path crosses forbidden area; using A* path planner.")
+            simulated_path = self.a_star_path_planning(current_pose, dest)
+            if debug:
+                print("Simulated Path (x, y):")
+                for point in simulated_path:
+                    print(f"({point[0]:.3f}, {point[1]:.3f})")
+                input("Press Enter to execute the path...")
+            return self.execute_path(simulated_path)
+
+    def interpolate_path(self, waypoints, steps_per_segment=10):
+        """
+        Linearly interpolate between each pair of waypoints to generate smoother substeps.
+        """
+        interpolated = []
+        for i in range(len(waypoints) - 1):
+            start = np.array(waypoints[i])
+            end = np.array(waypoints[i + 1])
+            for t in np.linspace(0, 1, steps_per_segment, endpoint=False):
+                point = (1 - t) * start + t * end
+                interpolated.append(point.tolist())
+        interpolated.append(waypoints[-1])  # include final point
+        return interpolated
+
+    def execute_path(self, waypoints: list[list[float]], steps_per_segment: int = 5, delay: float = 0.0) -> bool:
+        """
+        Faster version of execute_path:
+        - Fewer interpolation steps
+        - Minimal or no delay between steps
+        - Optional: switch to non-blocking for lightweight moves
+        """
+        interpolated_path = self.interpolate_path(waypoints, steps_per_segment)
+        for idx, point in enumerate(interpolated_path):
+            success = self.arbitrary_cartesian_movement(*point, blocking=False)
+            if not success:
+                print("Movement failed at:", point)
+                return False
+            if idx % 3 == 0 and delay > 0:
+                time.sleep(delay)
+        return True
+
+
+    def a_star_path_planning(self, start: list[float], goal: list[float], resolution=0.05) -> list[list[float]]:
+        """
+        A* path planning in 2D (x, y) over a grid. Z and orientation are linearly interpolated.
+        Avoids the forbidden ellipse region.
+        """
+        from queue import PriorityQueue
+
+        center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
+
+        def is_safe(x, y):
+            val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
+            return val >= 1.1  # 10% safety margin
+
+        def heuristic(p1, p2):
+            return np.linalg.norm(np.array(p1) - np.array(p2))
+
+        sx, sy, sz = start[:3]
+        gx, gy, gz = goal[:3]
+
+        visited = set()
+        queue = PriorityQueue()
+        queue.put((0, (sx, sy)))
+        parent = {}
+
+        while not queue.empty():
+            _, current = queue.get()
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if heuristic(current, (gx, gy)) < resolution * 1.5:
+                break
+
+            for dx in [-resolution, 0, resolution]:
+                for dy in [-resolution, 0, resolution]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = round(current[0] + dx, 3), round(current[1] + dy, 3)
+                    if not is_safe(nx, ny):
+                        continue
+                    if (nx, ny) in visited:
+                        continue
+                    cost = heuristic((nx, ny), (gx, gy))
+                    queue.put((cost, (nx, ny)))
+                    parent[(nx, ny)] = current
+
+        # Reconstruct path
+        path_xy = []
+        current = min(parent, key=lambda p: heuristic(p, (gx, gy)))
+        while current in parent:
+            path_xy.append(current)
+            current = parent[current]
+        path_xy.append((sx, sy))
+        path_xy.reverse()
+
+        # Add Z and angles via linear interpolation
+        path = []
+        for i, (x, y) in enumerate(path_xy):
+            t = i / (len(path_xy) - 1)
+            z = (1 - t) * sz + t * gz
+            theta = [ (1 - t) * start[3 + j] + t * goal[3 + j] for j in range(3)]
+            path.append([x, y, z] + theta)
+        return path
