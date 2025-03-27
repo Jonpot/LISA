@@ -96,7 +96,7 @@ class Database:
             raise ValueError(f"Position {position} is not a valid position.")
         self.lab_objects[name] = LabObject(name, tag_id, position)
     
-    def get_pose(self, lab_object: LabObject) -> list[float]:
+    def get_home_pose(self, lab_object: LabObject) -> list[float]:
         return self.positions[lab_object.home_position].pose
 
     def jsonify(self):
@@ -379,14 +379,14 @@ class Robot:
 
         return None
 
-    def remove_blocking_object(self, blocking_object: LabObject):
+    def remove_blocking_object(self, blocking_object: LabObject) -> None:
         """
         Similar to retrieve_from_shelf, but doesn't perform a general search
         if the object isn't found
         """
         # Move to the object
         self.mover._move_to_current_position()
-        objective_position = self.database.get_pose(blocking_object)
+        objective_position = self.database.get_home_pose(blocking_object)
         self.mover.move_to_pose(objective_position)
 
         # Verify the object is there
@@ -404,6 +404,44 @@ class Robot:
         # And the object's current position to "bench"
         blocking_object.current_position = "bench"
 
+    def smart_move_to_position(self, objective_position: str) -> dict[LabObject, Position]:
+        self.mover._move_to_current_position()
+        blocking_positions: list[Position] = []
+        blocking_objects: dict[LabObject, Position] = {}
+        if len(self.database.positions[objective_position].blocked_by) > 0:
+            self.vi.think("This position can be obscured by other objects. I'll check to see if it's clear.")
+            for potential_blocker in self.database.positions[objective_position].blocked_by:
+                if self.database.positions[potential_blocker].occupied:
+                    blocking_positions.append(self.database.positions[potential_blocker])
+
+        if len(blocking_positions) > 0:
+            # sort them by the length of their blocked_by list, so we remove
+            # the front-most blocker first
+            blocking_positions.sort(key=lambda x: len(x.blocked_by))
+
+            # Now convert the positions into the object names at those positions
+            for position in blocking_positions:
+                blocking_objects[self._get_object_from_db(position=position)] = position
+
+            # Now retrieve the objects blocking the way, one by one
+            for blocking_object, position in blocking_objects.items():
+                self.vi.think(f"Object {blocking_object.name} is blocking the way. I'll remove it.")
+                self.vi.ask_boolean(f"Please remove the object {blocking_object.name} from the path, and let me know when you're ready.")
+                self.remove_blocking_object(blocking_object)
+            
+            self.vi.think("The way is clear now. I'll proceed to retrieve the object.")
+
+
+        self.mover.move_to_pose(objective_position)
+
+        # Reverse the blocking objects so we put them back in the right order (back to front)
+        blocking_objects = {key: value for key, value in reversed(blocking_objects.items())}
+        return blocking_objects
+
+    def smart_move_to_object(self, lab_object: LabObject) -> dict[LabObject, Position]:
+        return self.smart_move_to_position(lab_object.current_position)
+        
+
     def retrieve_from_shelf(self, object_name: str):
         """
         This function will retrieve an object from a shelf according to the database
@@ -419,34 +457,7 @@ class Robot:
             self.vi.speak(f"Sorry, I can't retrieve {object_name} right now. It's in use by another scientist.")
 
         # Move to the object
-        self.mover._move_to_current_position()
-
-        objective_position = self.database.get_pose(lab_object)
-        blocking_positions: list[Position] = []
-        blocking_objects: dict[LabObject, Position] = {}
-        if len(self.database.positions[lab_object.home_position].blocked_by) > 0:
-            self.vi.think("This position can be obscured by other objects. I'll check to see if it's clear.")
-            for potential_blocker in self.database.positions[lab_object.home_position].blocked_by:
-                if self.database.positions[potential_blocker].occupied:
-                    blocking_positions.append(self.database.positions[potential_blocker])
-            if len(blocking_positions) > 0:
-                # sort them by the length of their blocked_by list, so we remove
-                # the front-most blocker first
-                blocking_positions.sort(key=lambda x: len(x.blocked_by))
-
-                # Now convert the positions into the object names at those positions
-                for position in blocking_positions:
-                    blocking_objects[self._get_object_from_db(position=position.name)] = position
-
-                # Now retrieve the objects blocking the way, one by one
-                for blocking_object, position in blocking_objects.items():
-                    self.vi.think(f"Object {blocking_object.name} is blocking the way. I'll remove it.")
-                    self.remove_blocking_object(blocking_object)
-                
-                self.vi.think("The way is clear now. I'll proceed to retrieve the object.")
-
-
-        self.mover.move_to_pose(objective_position)
+        blocking_objects = self.smart_move_to_object(lab_object)
 
         # Verify the object is there
         time.sleep(1)
@@ -469,76 +480,53 @@ class Robot:
 
         # If we removed a blocking object, we need to put it back
         if len(blocking_objects) > 0:
-            self.vi.speak("I've retrieved the object, but I need to put the blocking objects back.")
+            self.vi.speak(f"I've retrieved {object_name}, but I need to put the blocking objects back.")
         while len(blocking_objects) > 0:
-            blocking_object, position = blocking_objects.popitem()
+            blocking_object, return_position = blocking_objects.popitem()
             self.vi.speak(f"Please place the object {blocking_object.name} back at the object dock.")
             self.vi.ask_boolean("Let me know when you're ready.")
-            self.return_to_shelf()
+            self.return_to_shelf(blocking_object, return_position)
 
-    def return_to_shelf(self):
+    def return_to_shelf(self, return_object: LabObject | None = None, return_position: Position | None = None):
         """
         This function will return an object to the shelf
         """
 
-        # Go to object dock, detect apriltags to figure out what is being returned
-        self.mover._move_to_current_position()
-        self.mover.move_to_object_dock()
+        if return_object is None:
+            # Go to object dock, detect apriltags to figure out what is being returned
+            self.mover._move_to_current_position()
+            self.mover.move_to_object_dock()
 
-        # Detect apriltags
-        time.sleep(0.5)
-        detections = self.camera.detect_apriltags()
-        while len(detections) == 0:
-            self.vi.think("No objects detected at the object dock, returning to home")
+            # Detect apriltags
+            time.sleep(0.5)
             detections = self.camera.detect_apriltags()
-        
-        self.mover.move_home_from_dock()
-        # Get the object that is being returned
-        detection_id = detections[0]['id']
+            while len(detections) == 0:
+                self.vi.think("No objects detected at the object dock, returning to home")
+                detections = self.camera.detect_apriltags()
 
-        # Get the object from the database
-        lab_object: LabObject = self._get_object_from_db(id=detection_id)
-        if lab_object is None:
-            self.vi.speak("Object not found in the database")
-            return
-        
-        self.vi.think(f"Detected object with tag id {detection_id}, which is {lab_object.name}.")
+            self.mover.move_home_from_dock()
+            # Get the object that is being returned
+            detection_id = detections[0]['id']
 
-        # Verify the object's home is not occupied
-        self.mover._move_to_current_position()
+            # Get the object from the database
+            lab_object: LabObject = self._get_object_from_db(id=detection_id)
+            if lab_object is None:
+                self.vi.speak("Object not found in the database")
+                return
 
-        objective_position = self.database.get_pose(lab_object)
-        blocking_positions: list[Position] = []
-        blocking_objects: dict[LabObject, Position] = {}
-        if len(self.database.positions[lab_object.home_position].blocked_by) > 0:
-            self.vi.think("This position can be obscured by other objects. I'll check to see if it's clear.")
-            for potential_blocker in self.database.positions[lab_object.home_position].blocked_by:
-                if self.database.positions[potential_blocker].occupied:
-                    blocking_positions.append(self.database.positions[potential_blocker])
-            if len(blocking_positions) > 0:
-                # sort them by the length of their blocked_by list, so we remove
-                # the front-most blocker first
-                blocking_positions.sort(key=lambda x: len(x.blocked_by))
+            self.vi.think(f"Detected object with tag id {detection_id}, which is {lab_object.name}.")
 
-                # Now convert the positions into the object names at those positions
-                for position in blocking_positions:
-                    blocking_objects[self._get_object_from_db(position=position.name)] = position
+        if return_position is None:
+            # Assume we're returning the object to its home position
+            return_position = self.database.positions[lab_object.home_position]
 
-                # Now retrieve the objects blocking the way, one by one
-                for blocking_object, position in blocking_objects.items():
-                    self.vi.think(f"Object {blocking_object.name} is blocking the way. I'll remove it.")
-                    self.vi.ask_boolean(f"I need to remove object {blocking_object.name} from the shelf. Please clear the object dock and let me know when you're ready.")
-                    self.remove_blocking_object(blocking_object)
-                    self.database.positions[blocking_object.home_position].occupied = False
-                
-                self.vi.think("The way is clear now. I'll proceed to retrieve the object.")
+        # Verify the return position is not occupied
+        blocking_objects = self.smart_move_to_position(return_position.name)
 
-        self.vi.think(f"Moving to {lab_object.name}'s home position.")
-        self.mover.move_to_pose(objective_position)
         detections = self.camera.detect_immediate_apriltags()
         occupied = False
         if len(detections) > 0:
-            self.vi.think("Object's home might be occupied by another object, updating the database and backtracking")
+            self.vi.think("Return position might be occupied by another object, updating the database and backtracking")
             occupied = True
             detection = detections[0]
             self.vi.think(f"Detected occupying tag with id {detection['id']}")
@@ -548,7 +536,7 @@ class Robot:
             occupying_object: LabObject = self._get_object_from_db(id=detection['id'])
             if occupying_object is None:
                 self.vi.think("New object detected, updating the database")
-                self._add_object_to_database(detection['id'], self.database.get_pose(lab_object))
+                self._add_object_to_database(detection['id'], return_position.pose)
                 self.vi.think("Database updated, but I don't know where to put this object. Returning to dock.")
                 self.mover._move_to_current_position()
                 self.mover.move_to_pose(self.mover.home)
@@ -556,13 +544,15 @@ class Robot:
                 return
 
             # Update the database
-            prior_pos = occupying_object.home_position
-            occupying_object.home_position = lab_object.home_position
-            lab_object.home_position = prior_pos
+            prior_pos = occupying_object.current_position
+            occupying_object.current_position = return_position.name
+            self.database.positions[return_position.name].occupied = True
+            self.database.positions[prior_pos].occupied = False
+            return_position = self.database.positions[prior_pos]
 
             # Visit the prior pos to see if it's still occupied
             self.mover._move_to_current_position()
-            self.mover.move_to_pose(self.database.get_pose(occupying_object))
+            self.mover.move_to_pose(return_position.pose)
             detections = self.camera.detect_apriltags()
             if len(detections) == 0:
                 occupied = False
@@ -571,7 +561,7 @@ class Robot:
                 self.vi.think(f"Detected tag with id {detection['id']}")
                 continue
 
-        # At this point, we know the object's home (even if that was updated) is not occupied
+        # At this point, we know the object's target position (even if that was updated) is not occupied
         # Move to the object from the object dock to this location
         self.vi.think("Moving to the object dock to retrieve the object.")
         self.mover._move_to_current_position()
@@ -589,8 +579,8 @@ class Robot:
         self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
         
         self.mover.move_home_from_dock()
-        self.vi.think(f"Moving to {lab_object.name}'s home position.")
-        self.mover.move_to_pose(self.database.get_pose(lab_object))
+        self.vi.think(f"Moving to the target position.")
+        self.mover.move_to_pose(return_position.pose)
 
         # Move forward ~10cm to ensure the object is placed on the shelf
         self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
@@ -601,10 +591,10 @@ class Robot:
         self.mover.move_to_pose(self.mover.home)
 
         # Mark this position as occupied
-        self.database.positions[lab_object.home_position].occupied = True
+        self.database.positions[return_position.name].occupied = True
 
         # And the object's current position to the position it was returned to
-        lab_object.current_position = lab_object.home_position        
+        lab_object.current_position = return_position      
 
         # If we removed a blocking object, we need to put it back
         if len(blocking_objects) > 0:
