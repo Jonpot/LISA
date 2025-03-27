@@ -175,7 +175,21 @@ class AprilTagDetector:
 
         return []
 
+    def detect_immediate_apriltags(self, debug: bool = False) -> list[dict[str, int|float|np.ndarray]]:
+        """
+        This function will look for only immediately present apriltags in the camera video stream
 
+        :return: coordinates of an apriltag in the global frame _relative to the center of the frame_,
+                 the scale of the apriltag (for distance estimation), and the apriltag id or None if no apriltag is detected in the center
+        """
+        detections = self.detect_apriltags(debug=debug)
+        central_detections = []
+        for detection in detections:
+                # Check if the detection is in the center of the image and close (otherwise might just be in background)
+                print(f"Detected tag with id {detection['id']}, detection['x'] {detection['x']} detection['y'] {detection['y']} detection['z'] {detection['z']}")
+                if abs(detection['x']) < 50 and abs(detection['y']) < 50 and detection['z'] > 10:
+                    central_detections.append(detection)
+        return central_detections
 
     def detect_apriltag(self, id: int, debug: bool = False) -> dict[str, int|float|np.ndarray]:
         """
