@@ -60,6 +60,26 @@ class ArmMover:
         self.correction_forward_amount = 1000 # this should be fine-tuned experimentally
         self.correction_up_amount = 250
 
+        all_speed_hard_limits = self.robot_connection.base.GetAllJointsSpeedHardLimitation()
+
+        for speed_limit in all_speed_hard_limits.joints_limitations:
+            print("============================================")
+            print("Joint: {0}".format(speed_limit.joint_identifier))
+            print("Type of limitation: {0}".format(Base_pb2.LimitationType.Name(speed_limit.type)))
+            print("Value: {0}".format(speed_limit.value))
+            print("============================================")
+
+    def change_joint_speeds(self, max_speed: float):
+        """
+        Change the speed of the robot
+        :param max_speed: speed in m/s
+        """
+        all_speed_hard_limits = self.robot_connection.base.GetAllJointsSpeedHardLimitation()
+        for speed_limit in all_speed_hard_limits.joints_limitations:
+            speed_limit.value = max_speed
+    
+
+    @property
     def robot_position(self) -> list[float]:
         """
         Returns the current position of the robot and euler angles
@@ -245,7 +265,7 @@ class ArmMover:
             return False
 
         # Get current TCP pose
-        current_pose = self.robot_position()
+        current_pose = self.robot_position
         robot_position = np.array([current_pose[0], current_pose[1], current_pose[2]])
         robot_position = robot_position * 100 # multiply position by 100 (robot uses m, cm are more intuitive)
         
@@ -512,10 +532,11 @@ class ArmMover:
             print(f"Approaching apriltag, x: {x}, y: {y}, z: {z}, threshold: {abs(x)} is less than(?) {threshold}")  
         return True
 
-    def retrieve_apriltag_detection(self,
-                                    camera: AprilTagDetector,
-                                    detection: dict,
-                                    debug: bool = False) -> bool:
+    def move_apriltag_detection(self,
+                                camera: AprilTagDetector,
+                                detection: dict,
+                                objective_pose: list[float],
+                                debug: bool = False) -> bool:
         """
         Retrieve the apriltag
         :param camera: AprilTagDetector object
@@ -539,8 +560,7 @@ class ArmMover:
         self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
         self.move_relative_to_tcp([-self.correction_forward_amount, 0, 0], blocking=True)
         self._move_to_current_position() # back up directly first
-        self.move_to_pose(self.home)
-        self.move_to_object_dock()
+        self.move_to_pose(objective_pose)
         
         # Move forward ~10cm to ensure the object is placed on the dock
         self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
@@ -548,11 +568,10 @@ class ArmMover:
 
         self.open_gripper()
         self.move_relative_to_tcp([-self.correction_forward_amount, 0, 0], blocking=True)
-        self.move_home_from_dock()
 
         return True
 
-    def find_and_retrieve_apriltag(self, camera: AprilTagDetector, id: int, debug: bool = True) -> bool:
+    def find_and_move_apriltag(self, camera: AprilTagDetector, id: int, objective_pose: list[float], debug: bool = True) -> bool:
         """
         Scans the scene for and retrieves the apriltag with a specific ID
         :param camera: AprilTagDetector object
@@ -564,7 +583,7 @@ class ArmMover:
             return False
 
         print("Found apriltag in scene, attempting to retrieve.")
-        return self.retrieve_apriltag_detection(camera, detection, debug=debug)
+        return self.move_apriltag_detection(camera, detection, debug=debug, objective_pose=objective_pose)
 
     def calculate_forbidden_ellipse(self) -> tuple[list[float], float, float, float, float]:
         """
@@ -656,7 +675,7 @@ class ArmMover:
         Otherwise, A* path planning is used.
         When debug is True, outputs the simulated path (x, y values) and waits for key input before executing.
         """
-        current_pose = self.robot_position()
+        current_pose = self.robot_position
         if self.is_path_safe_ellipse(current_pose, dest):
             if debug:
                 print("Direct path is safe. Moving directly.")

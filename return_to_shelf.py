@@ -7,7 +7,7 @@ credentials = ("jpotter2", "MSAScapstone")
 
 robot = Robot(ip, port, credentials, vi_mode={'speech': True, 'listening': True, 'reasoning': True, 'think_out_loud': False})
 
-robot.return_to_shelf()
+robot.move_object()
 
 # End the program
 robot.exit()

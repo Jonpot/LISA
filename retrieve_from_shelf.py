@@ -10,7 +10,9 @@ robot = Robot(ip, port, credentials, vi_mode={'speech': True, 'listening': True,
 
 id = os.sys.argv[1]
 
-robot.retrieve_from_shelf(id)
+dock = robot._get_next_empty_dock()
+
+robot.retrieve_from_shelf(id, objective_position=dock.name)
 
 # End the program
 robot.exit()

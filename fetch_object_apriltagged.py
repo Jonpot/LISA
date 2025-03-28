@@ -10,7 +10,7 @@ credentials = ("jpotter2", "MSAScapstone")
 
 robot = Robot(ip, port, credentials)
 
-robot.mover.find_and_retrieve_apriltag(robot.camera, id=21)
+robot.mover.find_and_move_apriltag(robot.camera, id=21, objective_pose=robot._get_next_empty_dock())
 
 # End the program
 robot.exit()
