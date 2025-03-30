@@ -557,12 +557,21 @@ class Robot:
         self.move_object(lab_object.current_position, lab_object, lab_object.home_position)
 
 
-    def move_object(self, start_position: Position, object_to_move: LabObject, end_position: Position):
+    def move_object(self, start_position: Position, object_to_move: LabObject | None, end_position: Position | None):
         """
         This function will return an object to the shelf
         """
         held_blocking_objects = {}
         swapped_blocking_objects = {}
+
+        if start_position is None and object_to_move is None:
+            self.vi.speak("I can't move an unspecified object if I don't know where to look.")
+            return
+        
+        if start_position is None:
+            # Get the start position from the database
+            start_position = self.database.positions[object_to_move.current_position]
+
         if object_to_move is None:
             # Go to start position, detect apriltags to figure out what is being returned
             self.mover._move_to_current_position()
@@ -593,48 +602,49 @@ class Robot:
             # Assume we're returning the object to its home position
             end_position = self.database.positions[object_to_move.home_position]
 
-        # Verify the return position is not occupied
-        new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(end_position)
-        held_blocking_objects |= new_held_blocking_objects
-        swapped_blocking_objects |= new_swapped_blocking_objects
+        # Verify the return position is not occupied if its not a dock
+        if end_position.pos_type != "object_dock":
+            new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(end_position)
+            held_blocking_objects |= new_held_blocking_objects
+            swapped_blocking_objects |= new_swapped_blocking_objects
 
-        detections = self.camera.detect_immediate_apriltags()
-        occupied = False
-        if len(detections) > 0:
-            self.vi.think("Return position might be occupied by another object, updating the database and backtracking")
-            occupied = True
-            detection = detections[0]
-            self.vi.think(f"Detected occupying tag with id {detection['id']}")
-        
-        while occupied:
-            # Get the pose of the object that was actually there
-            occupying_object: LabObject = self._get_object_from_db(id=detection['id'])
-            if occupying_object is None:
-                self.vi.think("New object detected, updating the database")
-                self._add_object_to_database(detection['id'], end_position.pose)
-                self.vi.think("Database updated, but I don't know where to put this object. Returning to dock.")
-                self.mover._move_to_current_position()
-                self.mover.move_to_pose(self.mover.home)
-                self.vi.speak("While I was returning an object, I found a new object where this one should go. I added that one to my databse, but I don't know where to put this one. Please help me.")
-                return
-
-            # Update the database
-            prior_pos = occupying_object.current_position
-            occupying_object.current_position = end_position.name
-            self.database.positions[end_position.name].occupied = True
-            self.database.positions[prior_pos].occupied = False
-            end_position = self.database.positions[prior_pos]
-
-            # Visit the prior pos to see if it's still occupied
-            self.mover._move_to_current_position()
-            self.mover.move_to_pose(end_position.pose)
-            detections = self.camera.detect_apriltags()
-            if len(detections) == 0:
-                occupied = False
-            else:
+            detections = self.camera.detect_immediate_apriltags()
+            occupied = False
+            if len(detections) > 0:
+                self.vi.think("Return position might be occupied by another object, updating the database and backtracking")
+                occupied = True
                 detection = detections[0]
-                self.vi.think(f"Detected tag with id {detection['id']}")
-                continue
+                self.vi.think(f"Detected occupying tag with id {detection['id']}")
+            
+            while occupied:
+                # Get the pose of the object that was actually there
+                occupying_object: LabObject = self._get_object_from_db(id=detection['id'])
+                if occupying_object is None:
+                    self.vi.think("New object detected, updating the database")
+                    self._add_object_to_database(detection['id'], end_position.pose)
+                    self.vi.think("Database updated, but I don't know where to put this object. Returning to dock.")
+                    self.mover._move_to_current_position()
+                    self.mover.move_to_pose(self.mover.home)
+                    self.vi.speak("While I was returning an object, I found a new object where this one should go. I added that one to my databse, but I don't know where to put this one. Please help me.")
+                    return
+
+                # Update the database
+                prior_pos = occupying_object.current_position
+                occupying_object.current_position = end_position.name
+                self.database.positions[end_position.name].occupied = True
+                self.database.positions[prior_pos].occupied = False
+                end_position = self.database.positions[prior_pos]
+
+                # Visit the prior pos to see if it's still occupied
+                self.mover._move_to_current_position()
+                self.mover.move_to_pose(end_position.pose)
+                detections = self.camera.detect_apriltags()
+                if len(detections) == 0:
+                    occupied = False
+                else:
+                    detection = detections[0]
+                    self.vi.think(f"Detected tag with id {detection['id']}")
+                    continue
 
         # At this point, we know the object's target position (even if that was updated) is not occupied
         # Move to the object from the start position to the target position
