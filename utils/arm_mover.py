@@ -60,24 +60,18 @@ class ArmMover:
         self.correction_forward_amount = 1000 # this should be fine-tuned experimentally
         self.correction_up_amount = 250
 
-        all_speed_hard_limits = self.robot_connection.base.GetAllJointsSpeedHardLimitation()
+        self.cartesian_constraints = None
 
-        for speed_limit in all_speed_hard_limits.joints_limitations:
-            print("============================================")
-            print("Joint: {0}".format(speed_limit.joint_identifier))
-            print("Type of limitation: {0}".format(Base_pb2.LimitationType.Name(speed_limit.type)))
-            print("Value: {0}".format(speed_limit.value))
-            print("============================================")
+    def set_default_cartesian_constraints(self, max_speed_deg_s):
+        """
+        Set the default angular constraints for the robot. This is a workaround to set the speed and acceleration limits
+        :param max_speed_deg_s: Maximum speed in degrees per second
+        """
+        constraints = Base_pb2.CartesianTrajectoryConstraint()
+        constraints.speed.translation  = max_speed_deg_s
 
-    def change_joint_speeds(self, max_speed: float):
-        """
-        Change the speed of the robot
-        :param max_speed: speed in m/s
-        """
-        all_speed_hard_limits = self.robot_connection.base.GetAllJointsSpeedHardLimitation()
-        for speed_limit in all_speed_hard_limits.joints_limitations:
-            speed_limit.value = max_speed
-    
+        self.cartesian_constraints = constraints
+
 
     @property
     def robot_position(self) -> list[float]:
@@ -112,6 +106,11 @@ class ArmMover:
         cartesian_pose.theta_x = theta_x
         cartesian_pose.theta_y = theta_y
         cartesian_pose.theta_z = theta_z
+
+        # Attach constraints
+        if self.cartesian_constraints is not None:
+            action.reach_pose.constraint.CopyFrom(self.cartesian_constraints)
+            print(f"Setting constraints to {self.cartesian_constraints.speed} deg/s")
 
         #print(f"Moving to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z})")
         success = self._execute_movement(action, blocking)
@@ -176,7 +175,9 @@ class ArmMover:
         logging_thread.start()
 
         # Start the movement
-        success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+        #success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+
+        success = self.plan_path_to_destination(position, blocking=blocking)
 
         # Wait for the logging thread to finish
         logging_thread.join()
@@ -320,11 +321,11 @@ class ArmMover:
         Waggle the gripper
         :return: If operation was successful
         """
-        self.move_gripper(0.008)
+        self.move_gripper(0.009)
         self.move_gripper(0.035)
-        self.move_gripper(0.008)
+        self.move_gripper(0.009)
         self.move_gripper(0.035)
-        self.move_gripper(0.008)
+        self.move_gripper(0.009)
         self.move_gripper(0.035)
         return True
 
@@ -668,7 +669,7 @@ class ArmMover:
             waypoints.append(wp)
         return waypoints
 
-    def plan_path_to_destination(self, dest: list[float], debug: bool = False) -> bool:
+    def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = True) -> bool:
         """
         Plans a safe linear path toward the destination.
         If a direct path is safe, the arm moves directly.
@@ -679,7 +680,7 @@ class ArmMover:
         if self.is_path_safe_ellipse(current_pose, dest):
             if debug:
                 print("Direct path is safe. Moving directly.")
-            return self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2], dest[3], dest[4], dest[5])
+            return self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2], dest[3], dest[4], dest[5], blocking=blocking)
         else:
             if debug:
                 print("Direct path crosses forbidden area; using A* path planner.")

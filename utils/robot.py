@@ -90,7 +90,7 @@ class Database:
                     position.blocked_by.append(name)
 
         # Add the position to the database
-        self.positions[name] = Position(name, pose, blocked_by=[blocking_positions], pos_type=pos_type)
+        self.positions[name] = Position(name, pose, blocked_by=blocking_positions, pos_type=pos_type)
         
     def add_object(self, name: str, tag_id: int, position: str):
         if position not in self.positions:
@@ -144,6 +144,7 @@ class Robot:
                         self.database.add_position(key, value['pose'], self.vi, force=True)
                         self.database.positions[key].blocked_by = value['blocked_by']
                         self.database.positions[key].occupied = value['occupied']
+                        self.database.positions[key].pos_type = value['pos_type']
                     
                     for key, value in jsonified['lab_objects'].items():
                         self.database.add_object(key, value['tag_id'], value['position'])
@@ -152,11 +153,10 @@ class Robot:
 
         # Ensure object dock is in the database
         self.recent_calibration = False
-        if 'object_dock' not in self.database.positions:
+        if self._get_next_empty_dock() is None and not virtual_mode:
             self.vi.speak("I don't have an object dock in my database. We must launch calibration.")
             self.calibrate_workspace()
         
-        self.mover.object_dock = self.database.positions['object_dock'].pose
 
         # Move to home position
         if not virtual_mode:
@@ -283,8 +283,9 @@ class Robot:
             
                 self.vi.speak("Alright, I'm going to look for it now.")
                 detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
-                if detection is None:
-                    self.vi.speak("I couldn't find the calibration object. Aborting.")
+                while detection is None:
+                    self.vi.speak("I couldn't find the calibration object. Trying again.")
+                    detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
 
                 self.vi.think("I found the calibration object. I'm going to approach it now.")
                 self.mover.approach_apriltag_detection(self.camera, detection, threshold=425)
@@ -480,7 +481,7 @@ class Robot:
                     continue
 
                 #  Move the object to the swap position
-                self.move_object(blocking_position.name, blocking_object, swap_position.name)
+                self.move_object(blocking_position, blocking_object, swap_position)
 
                 # Mark this position as unoccupied
                 self.database.positions[blocking_position.name].occupied = False
@@ -557,12 +558,12 @@ class Robot:
         self.move_object(lab_object.current_position, lab_object, lab_object.home_position)
 
 
-    def move_object(self, start_position: Position, object_to_move: LabObject | None, end_position: Position | None):
+    def move_object(self, start_position: Position | None = None, object_to_move: LabObject | None = None, end_position: Position | None = None):
         """
         This function will return an object to the shelf
         """
-        held_blocking_objects = {}
-        swapped_blocking_objects = {}
+        held_blocking_objects: dict[LabObject, Position] = {}
+        swapped_blocking_objects: dict[LabObject, Position] = {}
 
         if start_position is None and object_to_move is None:
             self.vi.speak("I can't move an unspecified object if I don't know where to look.")
@@ -648,12 +649,14 @@ class Robot:
 
         # At this point, we know the object's target position (even if that was updated) is not occupied
         # Move to the object from the start position to the target position
-        self.vi.think("Moving to the start position to retrieve the object.")
+        self.vi.think(f"Moving to the start position ({start_position.name}) to retrieve the object.")
         self.mover._move_to_current_position()
         self.mover.open_gripper()
         if len(held_blocking_objects) > 0:
-            self.vi.ask_boolean(f"Please place the object back at {start_position.name} and let me know when you're ready.")
-        self.mover.move_to_pose(start_position.pose)
+            self.vi.ask_boolean(f"Please place the object {object_to_move.name} back at {start_position.name} and let me know when you're ready.")
+        new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(start_position)
+        held_blocking_objects |= new_held_blocking_objects
+        swapped_blocking_objects |= new_swapped_blocking_objects
         
         detection = self.camera.detect_apriltag(object_to_move.tag_id, debug=True)
         while detection is None:
@@ -683,7 +686,7 @@ class Robot:
 
         # If we removed a blocking object and gave it to the lab tech, we need to put it back
         if len(held_blocking_objects) > 0:
-            self.vi.speak("I've retrieved the object, but I need to put the blocking objects back.")
+            self.vi.speak(f"I've retrieved the object {object_to_move.name}, but I need to put the blocking objects back.")
         while len(held_blocking_objects) > 0:
             blocking_object, position = held_blocking_objects.popitem()
             self.vi.speak(f"Please place the object {blocking_object.name} back at the object dock.")
@@ -692,7 +695,8 @@ class Robot:
 
         # Once we've put the blocking objects back, we need to put the swapped blocking objects back
         if len(swapped_blocking_objects) > 0:
-            self.vi.speak("I've retrieved the object, but I need to put the swapped blocking objects back.")
+            self.vi.speak(f"I've retrieved the object {object_to_move.name}, but I need to put the swapped blocking objects back.")
         while len(swapped_blocking_objects) > 0:
             blocking_object, position = swapped_blocking_objects.popitem()
-            self.move_object(start_position, blocking_object, position)
+            self.vi.think(f"Returning object {blocking_object.name} to position {position.name}.")
+            self.move_object(blocking_object.current_position, blocking_object, position)
