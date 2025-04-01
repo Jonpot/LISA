@@ -588,22 +588,18 @@ class ArmMover:
 
     def calculate_forbidden_ellipse(self) -> tuple[list[float], float, float, float, float]:
         """
-        Returns the parameters of the forbidden ellipse based on known positions.
-        Hardcoded from:
-           Front: (0.494, 0.014, ~0.376) m,
-           Left: (0.272, 0.237, ~0.377) m,
-           Right: (0.277, -0.185, ~0.377) m,
-           Back (symmetry of front): (-0.494, 0.014, ~0.376) m.
-        Returns:
-           center_xy: [cx, cy]
-           a: major radius (x direction), b: minor radius (y direction)
-           z_min, z_max: allowable z range for the forbidden area.
+        Returns the parameters of the forbidden ellipse.
+        PLEASE UPDATE these parameters according to your workspace measurements.
+        For example:
+          - center_xy: set to the actual center of the dangerous region.
+          - a and b: set to the radii that actually block unreachable regions.
+          - z_center and delta_z: set to the vertical limits of the forbidden zone.
         """
-        center_xy = [0.0, 0.026]   # ( (0.494 + (-0.494))/2, (0.014+?)/2 ) simplified
-        a = 0.494                  # half front–back span
-        b = 0.211                  # half left–right span
-        z_center = 0.37
-        delta_z = 0.12             # tolerance in z
+        center_xy = [0.0, 0.0]  # Update if your unsafe region is offset.
+        a = 0.45              # Adjust these radii to cover only the truly unsafe area.
+        b = 0.275
+        z_center = 0.34       # Adjust based on your safe z.
+        delta_z = 0.15        # Lower delta_z to shrink the forbidden vertical zone.
         return center_xy, a, b, z_center - delta_z, z_center + delta_z
 
     def is_path_safe_ellipse(self, start: list[float], end: list[float]) -> bool:
@@ -612,11 +608,11 @@ class ArmMover:
         Samples N points and uses a margin factor increased by an extra_margin plus an extra tolerance for x,y and z.
         """
         center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
-        z_extra = 0.02  # additional tolerance in z
-        xy_extra = 0.01  # additional tolerance in x and y
+        z_extra = 0.2  # additional tolerance in z
+        xy_extra = 0.02  # additional tolerance in x and y
         N = 40  # number of samples
-        base_margin = 1.1  
-        extra_margin = 0.2  # additional delta for XY
+        base_margin = 1.15  
+        extra_margin = 0.25  # additional delta for XY
         margin = base_margin + extra_margin + xy_extra
         start_np = np.array(start[:3])
         end_np = np.array(end[:3])
@@ -627,47 +623,6 @@ class ArmMover:
             if ellipse_val < margin and (z_min - z_extra <= z <= z_max + z_extra):
                 return False
         return True
-
-    def generate_partial_arc_waypoints(self, start: list[float], dest: list[float], num_wp: int = 4, extra_offset: float = 0.05) -> list[list[float]]:
-        """
-        Generate waypoints along a partial arc (the shorter arc between start and destination)
-        around the forbidden ellipse center. The arc is computed using the angles of start and dest 
-        relative to the ellipse center. This ensures we do not overshoot the destination.
-        """
-        import math
-        center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
-        # Optionally shift center_x if destination is positive
-        if dest[0] > 0:
-            center_xy[0] = max(center_xy[0], 0.1)
-        extra_delta = 0.02  # additional safety distance
-        
-        # Calculate radius R (fixed for arc) and z (midpoint)
-        R = (a + b) / 2 + extra_offset + extra_delta
-        z = (z_min + z_max) / 2
-        
-        # Compute the polar angle for start and destination (relative to center_xy)
-        def compute_angle(pt):
-            return math.atan2(pt[1] - center_xy[1], pt[0] - center_xy[0])
-        
-        theta_start = compute_angle(start)
-        theta_dest = compute_angle(dest)
-        
-        # Find shortest angular difference 
-        dtheta = theta_dest - theta_start
-        if dtheta > math.pi:
-            dtheta -= 2 * math.pi
-        elif dtheta < -math.pi:
-            dtheta += 2 * math.pi
-        
-        # Generate intermediate waypoints along the arc (including destination)
-        waypoints = []
-        for i in range(1, num_wp+1):
-            theta = theta_start + (dtheta * i / num_wp)
-            x = center_xy[0] + R * math.cos(theta)
-            y = center_xy[1] + R * math.sin(theta)
-            wp = [x, y, z, dest[3], dest[4], dest[5]]
-            waypoints.append(wp)
-        return waypoints
 
     def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = True) -> bool:
         """
@@ -708,82 +663,91 @@ class ArmMover:
 
     def execute_path(self, waypoints: list[list[float]], steps_per_segment: int = 5, delay: float = 0.0) -> bool:
         """
-        Faster version of execute_path:
-        - Fewer interpolation steps
-        - Minimal or no delay between steps
-        - Optional: switch to non-blocking for lightweight moves
+        Executes the interpolated path.
+        Intermediate waypoints are moved non-blockingly, and the final move is blocking so we ensure the destination is reached.
         """
         interpolated_path = self.interpolate_path(waypoints, steps_per_segment)
-        for idx, point in enumerate(interpolated_path):
-            success = self.arbitrary_cartesian_movement(*point, blocking=False)
-            if not success:
-                print("Movement failed at:", point)
-                return False
-            if idx % 3 == 0 and delay > 0:
+        for point in interpolated_path[:-1]:
+            # Send non-blocking move commands for intermediate points
+            self.arbitrary_cartesian_movement(*point, blocking=False)
+            if delay > 0:
                 time.sleep(delay)
-        return True
-
+        # Final move blocking to ensure completion
+        return self.arbitrary_cartesian_movement(*interpolated_path[-1], blocking=True)
 
     def a_star_path_planning(self, start: list[float], goal: list[float], resolution=0.05) -> list[list[float]]:
         """
-        A* path planning in 2D (x, y) over a grid. Z and orientation are linearly interpolated.
-        Avoids the forbidden ellipse region.
+        A* path planning in 3D (x, y, z) over a grid. Orientation is linearly interpolated.
+        The safety check (is_safe) is applied on the (x,y) coordinates and on z.
         """
         from queue import PriorityQueue
 
         center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
 
-        def is_safe(x, y):
+        def is_safe(x, y, z):
+            # Check if (x,y) is inside the forbidden ellipse and z is within the dangerous vertical range.
+            # Adjust 1.1 as the nominal threshold.
             val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
-            return val >= 1.1  # 10% safety margin
+            if val < 1.2 and (z_min <= z <= z_max):
+                return False
+            return True
 
         def heuristic(p1, p2):
             return np.linalg.norm(np.array(p1) - np.array(p2))
 
         sx, sy, sz = start[:3]
         gx, gy, gz = goal[:3]
+        start_state = (sx, sy, sz)
+        goal_state = (gx, gy, gz)
 
         visited = set()
         queue = PriorityQueue()
-        queue.put((0, (sx, sy)))
+        queue.put((0, start_state))
         parent = {}
 
         while not queue.empty():
-            _, current = queue.get()
+            cost, current = queue.get()
             if current in visited:
                 continue
             visited.add(current)
 
-            if heuristic(current, (gx, gy)) < resolution * 1.5:
+            if heuristic(current, goal_state) < resolution * 1.5:
                 break
 
+            # Iterate over neighbors in 3D: include dx,dy,dz offsets.
             for dx in [-resolution, 0, resolution]:
                 for dy in [-resolution, 0, resolution]:
-                    if dx == 0 and dy == 0:
-                        continue
-                    nx, ny = round(current[0] + dx, 3), round(current[1] + dy, 3)
-                    if not is_safe(nx, ny):
-                        continue
-                    if (nx, ny) in visited:
-                        continue
-                    cost = heuristic((nx, ny), (gx, gy))
-                    queue.put((cost, (nx, ny)))
-                    parent[(nx, ny)] = current
+                    for dz in [-resolution, 0, resolution]:
+                        if dx == 0 and dy == 0 and dz == 0:
+                            continue
+                        neighbor = (round(current[0] + dx, 3),
+                                    round(current[1] + dy, 3),
+                                    round(current[2] + dz, 3))
+                        if neighbor in visited:
+                            continue
+                        if not is_safe(*neighbor):
+                            continue
+                        new_cost = heuristic(current, neighbor)
+                        total_cost = cost + new_cost + heuristic(neighbor, goal_state)
+                        queue.put((total_cost, neighbor))
+                        parent[neighbor] = current
 
-        # Reconstruct path
-        path_xy = []
-        current = min(parent, key=lambda p: heuristic(p, (gx, gy)))
+        # Reconstruct the path in 3D.
+        if parent:
+            current = min(parent, key=lambda p: heuristic(p, goal_state))
+        else:
+            current = start_state
+        path_xyz = []
         while current in parent:
-            path_xy.append(current)
+            path_xyz.append(current)
             current = parent[current]
-        path_xy.append((sx, sy))
-        path_xy.reverse()
+        path_xyz.append(start_state)
+        path_xyz.reverse()
 
-        # Add Z and angles via linear interpolation
+        # Interpolate orientation between start[3:] and goal[3:] linearly.
         path = []
-        for i, (x, y) in enumerate(path_xy):
-            t = i / (len(path_xy) - 1)
-            z = (1 - t) * sz + t * gz
-            theta = [ (1 - t) * start[3 + j] + t * goal[3 + j] for j in range(3)]
+        for i, (x, y, z) in enumerate(path_xyz):
+            t = i / (len(path_xyz) - 1) if len(path_xyz) > 1 else 0
+            theta = [(1 - t) * start[3 + j] + t * goal[3 + j] for j in range(3)]
             path.append([x, y, z] + theta)
         return path

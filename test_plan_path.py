@@ -15,7 +15,7 @@ robot_connection.create_connection()
 mover = ArmMover(robot_connection)
 
 # Example destination: using a sample destination pose
-destination = [0.305, 0.206, 0.42, 90, 0, 90]
+destination = [0.30, 0.20, 0.42, 90, 0, 90]
 object_dock = [-0.24, 0.45, 0.09, 90, 0, 171] # New position on second table
 sentry_position1 = [0.42, -0.30, 0.42, 90, 0, 46]
 sentry_position2 = [0.53, -0.13, 0.42, 90, 0, 66]
@@ -25,7 +25,7 @@ sentry_position6 = [0.53, -0.13, 0.22, 90, 0, 66]
 sentry_position7 = [0.57, 0.00, 0.22, 90, 0, 90]
 sentry_position8 = [0.54, 0.10, 0.22, 90, 0, 110]
 # Execute planning and movement with debug enabled
-result = mover.move_to_pose(destination)
+result = mover.plan_path_to_destination(destination,debug=True)
 if result:
     
     print("Movement executed successfully.")
@@ -34,11 +34,11 @@ else:
 
 time.sleep(2)
 
-result = mover.move_to_pose(object_dock)
-if result:
+#result = mover.plan_path_to_destination(object_dock,debug=True)
+#if result:
     
-    print("Movement executed successfully.")
-else:
-    print("Movement failed.")
+#    print("Movement executed successfully.")
+#else:
+#    print("Movement failed.")
 
 robot_connection.close_connection()
