@@ -128,6 +128,8 @@ class Robot:
                                     enable_reasoning=vi_mode['reasoning'],
                                     think_out_loud=vi_mode['think_out_loud'])
 
+        self.holding: LabObject | None = None
+
         # Load/create the database
         if new_database:
             if os.path.exists("database.json"):
@@ -419,6 +421,26 @@ class Robot:
 
         return None
 
+    def prepare_to_pickup(self, lab_object: LabObject) -> None:
+        """
+        Sets speeds for the robot to pick up an object
+        """
+        if lab_object.special_handling:
+            self.mover.set_default_cartesian_constraints(2)
+        else:
+            self.mover.set_default_cartesian_constraints(13)
+
+        self.holding = lab_object
+
+
+    def set_gripper_empty(self) -> None:
+        """
+        Sets the gripper to empty
+        """
+        self.mover.set_default_cartesian_constraints(13)
+        self.holding = None
+
+
     def remove_blocking_object(self, blocking_object: LabObject, objective_position: Position) -> None:
         """
         Similar to retrieve_from_shelf, but doesn't perform a general search
@@ -437,7 +459,9 @@ class Robot:
             self.vi.think("Object not found at the expected location.")
             return
 
+        self.prepare_to_pickup(blocking_object)
         self.mover.move_apriltag_detection(self.camera, detection, objective_pose=objective_position.pose)
+        self.set_gripper_empty()
 
         # Mark this position as unoccupied
         self.database.positions[blocking_object.current_position].occupied = False
@@ -638,7 +662,10 @@ class Robot:
 
                 # Visit the prior pos to see if it's still occupied
                 self.mover._move_to_current_position()
-                self.mover.move_to_pose(end_position.pose)
+                new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(end_position)
+                held_blocking_objects |= new_held_blocking_objects
+                swapped_blocking_objects |= new_swapped_blocking_objects
+
                 detections = self.camera.detect_apriltags()
                 if len(detections) == 0:
                     occupied = False
@@ -652,7 +679,7 @@ class Robot:
         self.vi.think(f"Moving to the start position ({start_position.name}) to retrieve the object.")
         self.mover._move_to_current_position()
         self.mover.open_gripper()
-        if len(held_blocking_objects) > 0:
+        if len(held_blocking_objects) > 0 and start_position.pos_type == "object_dock":
             self.vi.ask_boolean(f"Please place the object {object_to_move.name} back at {start_position.name} and let me know when you're ready.")
         new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(start_position)
         held_blocking_objects |= new_held_blocking_objects
@@ -661,21 +688,10 @@ class Robot:
         detection = self.camera.detect_apriltag(object_to_move.tag_id, debug=True)
         while detection is None:
             detection = self.camera.detect_apriltag(object_to_move.tag_id, debug=True)
-        self.mover.approach_apriltag_detection(self.camera, detection)
-        self.mover.close_gripper()
-        self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
         
-        self.mover._move_to_current_position()
-        self.vi.think(f"Moving to the target position.")
-        self.mover.move_to_pose(end_position.pose)
-
-        # Move forward ~10cm to ensure the object is placed on the shelf
-        self.mover.move_relative_to_tcp([0, 0, self.mover.correction_up_amount], blocking=True)
-        self.mover.move_relative_to_tcp([self.mover.correction_forward_amount, 0, 0], blocking=True)
-
-        self.mover.open_gripper()
-        self.mover.move_relative_to_tcp([-self.mover.correction_forward_amount, 0, 0], blocking=True)
-        self.mover.move_to_pose(self.mover.home)
+        self.prepare_to_pickup(object_to_move)
+        self.mover.move_apriltag_detection(self.camera, detection, objective_pose=end_position.pose)
+        self.set_gripper_empty()
 
         # Mark this position as occupied
         if end_position.pos_type != "object_dock": # object docks can't be occupied, they are permanent sinks
