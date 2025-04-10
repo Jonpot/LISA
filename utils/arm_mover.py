@@ -58,7 +58,7 @@ class ArmMover:
 
 
         self.correction_forward_amount = 1000 # this should be fine-tuned experimentally
-        self.correction_up_amount = 250
+        self.correction_up_amount = 750
 
         self.cartesian_constraints = None
 
@@ -486,7 +486,7 @@ class ArmMover:
     def approach_apriltag_detection(self,
                                     camera: AprilTagDetector,
                                     detection: dict,
-                                    threshold: float = 260,
+                                    threshold: float = 280,
                                     debug: bool = False) -> bool:
         """
         Approach the apriltag detection
@@ -561,13 +561,18 @@ class ArmMover:
         self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
         self.move_relative_to_tcp([-self.correction_forward_amount, 0, 0], blocking=True)
         self._move_to_current_position() # back up directly first
+
+        print(f"Objective pose before adding correction: {objective_pose}")
+        objective_pose[2] += self.correction_up_amount/10000 # add the correction amount to the z position
+        print(f"Objective pose after adding correction: {objective_pose}")
         self.move_to_pose(objective_pose)
         
         # Move forward ~10cm to ensure the object is placed on the dock
-        self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
         self.move_relative_to_tcp([self.correction_forward_amount, 0, 0], blocking=True)
+        self.move_relative_to_tcp([0, 0, -self.correction_up_amount], blocking=True)
 
         self.open_gripper()
+        self.move_relative_to_tcp([0, 0, self.correction_up_amount], blocking=True)
         self.move_relative_to_tcp([-self.correction_forward_amount, 0, 0], blocking=True)
 
         return True

@@ -29,7 +29,7 @@ class Position:
         return f"Name: {self.name}, Pose: {self.pose}"
 
     def jsonify(self):
-        return {"name": self.name, "pose": self.pose, "blocked_by": self.blocked_by, "occupied": self.occupied}
+        return {"name": self.name, "pose": self.pose, "blocked_by": self.blocked_by, "occupied": self.occupied, "pos_type": self.pos_type}
 
 class LabObject:
     def __init__(self, name: str, tag_id: int, position: str):
@@ -150,6 +150,7 @@ class Robot:
                     
                     for key, value in jsonified['lab_objects'].items():
                         self.database.add_object(key, value['tag_id'], value['position'])
+                        self.database.lab_objects[key].special_handling = value['special_handling']
             else:
                 self.database = Database()
 
@@ -542,7 +543,7 @@ class Robot:
                 
                 self.vi.think("The way is clear now. I'll proceed to the object's position.")
 
-
+        #print(f"moving to pose! {objective_position.pose}")
         self.mover.move_to_pose(objective_position.pose)
 
         # Reverse the blocking objects so we put them back in the right order (back to front)
@@ -599,7 +600,6 @@ class Robot:
 
         if object_to_move is None:
             # Go to start position, detect apriltags to figure out what is being returned
-            self.mover._move_to_current_position()
             new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(start_position)
             held_blocking_objects |= new_held_blocking_objects
             swapped_blocking_objects |= new_swapped_blocking_objects
@@ -677,8 +677,6 @@ class Robot:
         # At this point, we know the object's target position (even if that was updated) is not occupied
         # Move to the object from the start position to the target position
         self.vi.think(f"Moving to the start position ({start_position.name}) to retrieve the object.")
-        self.mover._move_to_current_position()
-        self.mover.open_gripper()
         if len(held_blocking_objects) > 0 and start_position.pos_type == "object_dock":
             self.vi.ask_boolean(f"Please place the object {object_to_move.name} back at {start_position.name} and let me know when you're ready.")
         new_held_blocking_objects, new_swapped_blocking_objects = self.smart_move_to_position(start_position)
@@ -698,7 +696,7 @@ class Robot:
             self.database.positions[end_position.name].occupied = True
 
         # And the object's current position to the position it was returned to
-        object_to_move.current_position = end_position      
+        object_to_move.current_position = end_position.name
 
         # If we removed a blocking object and gave it to the lab tech, we need to put it back
         if len(held_blocking_objects) > 0:
