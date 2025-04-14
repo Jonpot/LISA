@@ -33,16 +33,17 @@ class Position:
         return {"name": self.name, "pose": self.pose, "blocked_by": self.blocked_by, "occupied": self.occupied, "pos_type": self.pos_type}
 
 class LabObject:
-    def __init__(self, name: str, tag_id: int, position: str):
+    def __init__(self, name: str, tag_id: int, position_name: str):
         self.name = name
         self.tag_id = tag_id
-        self.last_storage_position = position
+        self.last_storage_position = position_name
         self.special_handling = False
-        self.current_position = position
+        self.current_position_name = position_name
         self.storage_position_type = "storage"
+        self.description = None
 
     def __str__(self):
-        return f"Tag ID: {self.tag_id}, Position: {self.current_position}, Special Handling: {self.special_handling}"
+        return f"Tag ID: {self.tag_id}, Position: {self.current_position_name}, Special Handling: {self.special_handling}"
 
     def jsonify(self):
         return {"tag_id": self.tag_id, "position": self.last_storage_position, "special_handling": self.special_handling}
@@ -94,11 +95,11 @@ class Database:
         # Add the position to the database
         self.positions[name] = Position(name, pose, blocked_by=blocking_positions, pos_type=pos_type)
         
-    def add_object(self, name: str, tag_id: int, position: str):
-        if position not in self.positions:
-            raise ValueError(f"Position {position} is not a valid position.")
-        self.lab_objects[name] = LabObject(name, tag_id, position)
-        self.lab_objects[name].storage_position_type = self.positions[position].pos_type
+    def add_object(self, name: str, tag_id: int, position_name: str):
+        if position_name not in self.positions:
+            raise ValueError(f"Position {position_name} is not a valid position.")
+        self.lab_objects[name] = LabObject(name, tag_id, position_name)
+        self.lab_objects[name].storage_position_type = self.positions[position_name].pos_type
     
     def get_home_pose(self, lab_object: LabObject) -> list[float]:
         return self.positions[lab_object.last_storage_position].pose
@@ -219,20 +220,33 @@ class Robot:
 
     def _add_object_to_database(self,
                                 tag_id: int,
-                                pose: list[float]
+                                position_name: str
                                 ):
         """
         Helper function to add an object to the database
         """
         # Inquire about this object
         self.mover.waggle_gripper()
+
+        if self.vi.reasoning and self.vi.ask_boolean("Do you want to upload a Safety Data Sheet for this object?"):
+            # We have access to reasoning, let's see if they have a PDF of a Safety Data Sheet they'd like to upload
+            object_name, special_handling, storage_position_type, description = self.vi.ask_sds(self.database.lab_objects.keys(), self.database.all_position_types)
+            
+            if object_name is not None:
+                self.database.add_object(object_name, tag_id, position_name)
+                self.database.lab_objects[object_name].special_handling = special_handling
+                self.database.lab_objects[object_name].storage_position_type = storage_position_type
+                self.database.lab_objects[object_name].description = description
+                return
+            else:
+                self.vi.think("No object name was provided, so we will add the object manually")
+            
         object_name = self.vi.ask("What is this object?")
         special_handling = self.vi.ask("Does this object require special handling? (y/n)")
         special_handling = True if 'y' in special_handling.lower() else False
 
         # Add the object to the database
-        self.database.add_position(f'{object_name}_pos', pose, self.vi)
-        self.database.add_object(object_name, tag_id, f'{object_name}_pos')
+        self.database.add_object(object_name, tag_id, position_name)
         self.database.lab_objects[object_name].special_handling = special_handling
 
     def scan_and_populate_database_naive(self):
@@ -338,22 +352,16 @@ class Robot:
         self.vi.speak("Alright, I'm going to look for objects now.")
 
         # Go to every position and scan for objects
-        for position in self.database.positions:
+        for position_name in self.database.positions:
             self.mover.move_to_pose(self.mover.home)
-            self.vi.think(f"Moving to {position}.")
-            self.mover.move_to_pose(self.database.positions[position].pose)
-            self.vi.think(f"Scanning {position} for objects.")
+            self.vi.think(f"Moving to {position_name}.")
+            self.mover.move_to_pose(self.database.positions[position_name].pose)
+            self.vi.think(f"Scanning {position_name} for objects.")
             detections = self.camera.detect_apriltags()
             for detection in detections:
                 self.vi.think(f"Detected object with tag id {detection['id']}.")
                 if self.vi.ask_boolean("Would you like to add this object to the database?"):
-                    name = self.vi.ask("What is the name of this object?")
-                    while name in self.database.lab_objects:
-                        name = self.vi.ask("That object is already in the database. Please provide a different name.")
-                    special_handling = self.vi.ask_boolean("Does this object require special handling?")
-                    self.database.add_object(name, detection['id'], position)
-                    self.database.lab_objects[name].special_handling = special_handling
-                    self.database.positions[position].occupied = True
+                    self._add_object_to_database(detection['id'], position_name)
                 else:
                     self.vi.think("Okay, I won't add this object to the database.")
 
@@ -367,7 +375,7 @@ class Robot:
 
     def _get_object_from_db(self,
                             name: str|None = None,
-                            position: str|None = None,
+                            position_name: str|None = None,
                             pose: list[float]|None = None,
                             id: int|None = None) -> LabObject:
         """
@@ -385,9 +393,9 @@ class Robot:
                     self.vi.think(f"Based on reasoning, I believe the user is asking for the object '{name}'.")
                     self.vi.speak(f"Sounds like you want {name}. I'll get it for you.")
                     return self.database.lab_objects[name]
-        elif position is not None:
+        elif position_name is not None:
             for lab_object_name, lab_object in self.database.lab_objects.items():
-                if self.database.lab_objects[lab_object_name].last_storage_position == position:
+                if self.database.lab_objects[lab_object_name].last_storage_position == position_name:
                     return lab_object
         elif pose is not None:
             for lab_object_name, lab_object in self.database.lab_objects.items():
@@ -443,13 +451,13 @@ class Robot:
         self.set_gripper_empty()
 
         # Mark this position as unoccupied
-        self.database.positions[blocking_object.current_position].occupied = False
+        self.database.positions[blocking_object.current_position_name].occupied = False
 
         # Mark the objective position as occupied
         self.database.positions[objective_position.name].occupied = True
 
         # And the object's current position to
-        blocking_object.current_position = objective_position.name
+        blocking_object.current_position_name = objective_position.name
 
 
     def smart_move_to_position(self, objective_position: Position) -> tuple[dict[LabObject, Position], dict[LabObject, Position]]:
@@ -477,7 +485,7 @@ class Robot:
                 swap_position = self._get_next_empty_swap_position()
                 self.vi.think(f"Object {blocking_position.name} is blocking the way. I'll move it to swap position {swap_position.name}.")
                 # Get the object in the blocking position
-                blocking_object: LabObject = self._get_object_from_db(position=blocking_position.name)
+                blocking_object: LabObject = self._get_object_from_db(position_name=blocking_position.name)
                 if blocking_object is None:
                     self.vi.think("Something has gone wrong and this position shouldn't have been marked as occupied")
                     self.database.positions[blocking_position.name].occupied = False
@@ -493,7 +501,7 @@ class Robot:
                 self.database.positions[swap_position.name].occupied = True
 
                 # And the object's current position to swap_position
-                blocking_object.current_position = swap_position.name
+                blocking_object.current_position_name = swap_position.name
 
                 # Add it to the list of swapped objects
                 swapped_blocking_objects[blocking_object] = blocking_position
@@ -511,7 +519,7 @@ class Robot:
                 
                 # Now convert the positions into the object names at those positions
                 for position in held_blocking_positions:
-                    held_blocking_objects[self._get_object_from_db(position=position)] = position
+                    held_blocking_objects[self._get_object_from_db(position_name=position)] = position
 
                 # Now retrieve the objects blocking the way, one by one
                 for blocking_object, position in held_blocking_objects.items():
@@ -529,7 +537,7 @@ class Robot:
         return held_blocking_objects, swapped_blocking_objects
 
     def smart_move_to_object(self, lab_object: LabObject) -> tuple[dict[LabObject, Position], dict[LabObject, Position]]:
-        return self.smart_move_to_position(self.database.positions[lab_object.current_position])
+        return self.smart_move_to_position(self.database.positions[lab_object.current_position_name])
         
 
     def retrieve_from_shelf(self, object_name: str, objective_position: Position):
@@ -543,10 +551,10 @@ class Robot:
             return
 
         # If the object isn't currently at it's home position, fail (not implemented behavior)
-        if lab_object.current_position != lab_object.last_storage_position:
+        if lab_object.current_position_name != lab_object.last_storage_position:
             self.vi.speak(f"Sorry, I can't retrieve {object_name} right now. It's in use by another scientist.")
 
-        self.move_object(lab_object.current_position, lab_object, objective_position)
+        self.move_object(lab_object.current_position_name, lab_object, objective_position)
 
     def return_to_shelf(self, object_name: str | None):
         """
@@ -558,7 +566,7 @@ class Robot:
             self.vi.speak(f"Hmm, {object_name} isn't in the database. I can't return it.")
             return
 
-        self.move_object(lab_object.current_position, lab_object, lab_object.last_storage_position)
+        self.move_object(lab_object.current_position_name, lab_object, lab_object.last_storage_position)
 
 
     def move_object(self, start_position: Position | None = None, object_to_move: LabObject | None = None, end_position: Position | None = None):
@@ -574,7 +582,7 @@ class Robot:
         
         if start_position is None:
             # Get the start position from the database
-            start_position = self.database.positions[object_to_move.current_position]
+            start_position = self.database.positions[object_to_move.current_position_name]
 
         if object_to_move is None:
             # Go to start position, detect apriltags to figure out what is being returned
@@ -635,8 +643,8 @@ class Robot:
                     return
 
                 # Update the database
-                prior_pos = occupying_object.current_position
-                occupying_object.current_position = end_position.name
+                prior_pos = occupying_object.current_position_name
+                occupying_object.current_position_name = end_position.name
                 self.database.positions[end_position.name].occupied = True
                 self.database.positions[prior_pos].occupied = False
                 end_position = self.database.positions[prior_pos]
@@ -677,7 +685,7 @@ class Robot:
             self.database.positions[end_position.name].occupied = True
 
         # And the object's current position to the position it was returned to
-        object_to_move.current_position = end_position.name
+        object_to_move.current_position_name = end_position.name
 
         # If we removed a blocking object and gave it to the lab tech, we need to put it back
         if len(held_blocking_objects) > 0:
@@ -694,4 +702,41 @@ class Robot:
         while len(swapped_blocking_objects) > 0:
             blocking_object, position = swapped_blocking_objects.popitem()
             self.vi.think(f"Returning object {blocking_object.name} to position {position.name}.")
-            self.move_object(blocking_object.current_position, blocking_object, position)
+            self.move_object(self.database.positions[blocking_object.current_position_name], blocking_object, position)
+
+
+    def setup_for_protocol(self):
+        """
+        This function will setup the robot for a protocol
+        """
+        end_position_name = None
+        while end_position_name is None:
+            end_position_name = self.vi.ask(f"Happy to help you set up a protocol. What bench position do you want to set up? (Choose from {[self.database.positions.keys()]})")
+            if end_position_name not in self.database.positions:
+                if self.vi.reasoning:
+                    self.vi.think(f"That position is not in my database, but maybe they misspoke or mistyped. Let me reason about what they might mean.")
+                    end_position_name = self.vi.reason(f"A user is asking for a position named {end_position_name}. My database contains the following positions: {', '.join(self.database.positions.keys())}. Which position should I retrieve? Return only the exact name of the position and no other text. If no position is found, return 'None'.")
+                    if end_position_name not in self.database.positions:
+                        self.vi.think("I couldn't find a position that matches what they said, so I'm going to ask them to clarify.")
+                        end_position_name = None
+                        continue
+                self.vi.speak(f"That position is not in my database. Please provide a different name from the listed options.")
+                end_position_name = None
+                continue
+
+        end_position = self.database.positions[end_position_name]
+        objects_to_retrieve = self.vi.parse_protocol([self.database.lab_objects.keys()])
+
+        for object_to_retrieve in objects_to_retrieve:
+            lab_object: LabObject = self._get_object_from_db(name=object_to_retrieve)
+            if lab_object is None:
+                self.vi.speak(f"Hmm, {object_to_retrieve} isn't in the database. I can't retrieve it.")
+                continue
+
+            # If the object isn't currently at it's home position, fail (not implemented behavior)
+            if lab_object.current_position_name != lab_object.last_storage_position:
+                self.vi.speak(f"Sorry, I can't retrieve {object_to_retrieve} right now. It's in use by another scientist.")
+                continue
+
+            self.retrieve_from_shelf(object_to_retrieve, end_position)
+            self.vi.think(f"Retrieved {object_to_retrieve}.")

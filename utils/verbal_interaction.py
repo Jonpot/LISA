@@ -1,9 +1,13 @@
+from typing import List, Tuple
 import webrtcvad
 import pyaudio
 import wave
 import io
 from openai import OpenAI
 import numpy as np
+import tkinter as tk
+from tkinter import filedialog
+import PyPDF2
 
 class VerbalInteraction:
     def __init__(self, enable_speech: bool = False, enable_listening: bool = False, enable_reasoning: bool = False, think_out_loud: bool = False):
@@ -212,6 +216,156 @@ class VerbalInteraction:
         return response
 
 
+    def ask_sds(self, existing_objects: List[str], storage_types: List[str]) -> Tuple[str, bool, str, str]:
+        """
+        Opens a prompt to select/drag-and-drop a PDF file of a SDS (Safety Data Sheet) for a chemical/reagent.
+        The SDS is then uploaded to the reasoning LLM (OpenAI's chatgpt in this case) to extract the relevant information:
+        - Name of this object (must be distinct from existing objects)
+        - Does this require "special handling" (should the robot move much slower when moving this object)
+        - What type of storage should be used for this object (out of the given storage types)
+        - A brief description of this object (for the robot to use as a reference when asked about it later)
+        """
+        # Open a GUI to select a PDF file of the SDS
+        root = tk.Tk()
+        root.withdraw()
+        file_path = filedialog.askopenfilename(title="Select a PDF file of the SDS", filetypes=[("PDF files", "*.pdf")])
+        if not file_path:
+            print("No file selected.")
+            return None, False, None, None
+        
+        # Now, we need to extract the text from the PDF file  
+        with open(file_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text()
+        
+        # Now, ask the reasoning LLM to extract the relevant information from the text
+        # Tell it to return the answers in a specific JSON format
+        object_name = None 
+        special_handling = None
+        storage_type = None
+        description = None
+        messages = [
+                    {"role": "user", "content": f"Please extract the following information from this SDS text:\n\n{text}\n\n1. Name of this object (must be distinct from existing objects: {existing_objects}) as a str\n2. Does this require special handling ('true' or 'false')?\n3. What type of storage should be used for this object (out of the given storage types: {storage_types})? as a str\n4. A brief description of this object.\n\nPlease return the answers in the following JSON format:\n{'{'}object_name': '...' <str>, 'special_handling': '...' <bool>, 'storage_type': '...' <str>, 'description': '...' <str>{'}'}. Do not include any other text or explanation. Just return the JSON object."}
+                ]
+        attempts = 0
+        while object_name is None or special_handling is None or storage_type is None:
+            attempts += 1
+            if attempts > 3:
+                self.think("Too many attempts to get valid SDS information. Moving to manual input.")
+                return None, False, None, None
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini-2024-07-18",
+                messages=messages
+            )
+            messages.append({"role": "assistant", "content": response.choices[0].message.content})
+            try:
+                response_json = eval(response.choices[0].message.content)
+                object_name = response_json.get('object_name')
+                special_handling = response_json.get('special_handling')
+                storage_type = response_json.get('storage_type')
+                description = response_json.get('description')
+            except Exception as e:
+                self.think(f"Error parsing response: {e}")
+                self.think("Response:", response.choices[0].message.content)
+                messages.append({"role": "user", "content": "I couldn't parse the response as JSON. Please try again. Do not include any other text or explanation."})
+
+                object_name = None
+                special_handling = None
+                storage_type = None
+                description = None
+                continue
+
+            # Check if the object name is distinct from existing objects
+            if object_name in existing_objects:
+                messages.append({"role": "user", "content": f"The object name '{object_name}' is already in use. Please provide a distinct name. Return the entire JSON response with the new name and no other text."})
+                object_name = None
+                continue
+
+            # Check if the special handling is a boolean
+            if special_handling not in ["true", "false"]:
+                messages.append({"role": "user", "content": f"The special handling value '{special_handling}' is not valid. Please provide 'true' or 'false'. Return the entire JSON response with the new value and no other text."})
+                special_handling = None
+                continue
+
+            # Check if the storage type is valid
+            if storage_type not in storage_types:
+                messages.append({"role": "user", "content": f"The storage type '{storage_type}' is not valid. Please provide a valid storage type from the list: {storage_types}. Return the entire JSON response with the new value and no other text."})
+                storage_type = None
+                continue
+
+            # Otherwise, we're done!
+            self.think(f"Got the following information from the SDS:\nObject name: {object_name}\nSpecial handling: {special_handling}\nStorage type: {storage_type}\nDescription: {description}")
+        return object_name, special_handling == "true", storage_type, description
+
+    def parse_protocol(self, existing_objects: List[str]) -> List[str]:
+        """
+        Allows a scientist to upload a protocol in PDF, text, etc. format.
+        The protocol is then uploaded to the reasoning LLM (OpenAI's chatgpt in this case) to extract the relevant information:
+        - What objects (from the existing objects) are needed for this protocol?
+        """
+        # Open a GUI to select a PDF file of the protocol
+        root = tk.Tk()
+        root.withdraw()
+        file_path = filedialog.askopenfilename(title="Select a PDF file of the protocol", filetypes=[("PDF files", "*.pdf"), ("Text files", "*.txt")])
+        if not file_path:
+            print("No file selected.")
+            return []
+
+        # Now, we need to extract the text from the PDF file  
+        # If it's a PDF, use PyPDF2 to extract text
+        if file_path.endswith('.pdf'):
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text()
+        # If it's a text file, just read it
+        elif file_path.endswith('.txt'):
+            with open(file_path, 'r') as f:
+                text = f.read()
+        else:
+            print("Unsupported file type. Please select a PDF or text file.")
+            return []
+
+        # Now, ask the reasoning LLM to extract the relevant information from the text
+        # Tell it to return the answers in a specific JSON format
+        object_names = []
+        messages = [
+                    {"role": "user", "content": f"Please extract the following information from this protocol text:\n\n{text}\n\nWhat objects (from the existing objects: {existing_objects}) are needed for this protocol? Please return the answers as a list of strings. Do not include any other text or explanation. Just return the list."}
+                ]
+        attempts = 0
+        while len(object_names) == 0:
+            attempts += 1
+            if attempts > 3:
+                self.think("Too many attempts to get valid information. Moving to manual input.")
+                return []
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini-2024-07-18",
+                messages=messages
+            )
+            messages.append({"role": "assistant", "content": response.choices[0].message.content})
+            try:
+                object_names = eval(response.choices[0].message.content)
+            except Exception as e:
+                self.think(f"Error parsing response: {e}")
+                self.think("Response:", response.choices[0].message.content)
+                messages.append({"role": "user", "content": "I couldn't parse the response as JSON. Please try again. Do not include any other text or explanation."})
+                object_names = []
+                continue
+
+            # Check if the objects are in the existing objects
+            for object_name in object_names:
+                if object_name not in existing_objects:
+                    messages.append({"role": "user", "content": f"The object name '{object_name}' is not in the existing objects. Please provide a valid name from the list: {existing_objects}. Return the entire JSON response with the new value and no other text."})
+                    object_names = []
+                    continue
+
+            # Otherwise, we're done!
+            self.think(f"Got the following objects from the protocol:\n{object_names}")
+        return object_names
+
     def respond(self, prompt: str) -> str:
         response = self.reason(prompt)
         if response:
@@ -227,7 +381,7 @@ class VerbalInteraction:
         self.message_history = self.message_history[-10:]
         
         completion = self.client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini-2024-07-18",
             messages=self.message_history
         )
         assistant_response = completion.choices[0].message.content
