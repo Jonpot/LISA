@@ -176,6 +176,42 @@ class VerbalInteraction:
 
         return self.ask_boolean(prompt)
 
+    def ask_position_type(self, prompt: str) -> str:
+        response = self.ask(prompt).lower()
+
+        if response == "object_dock":
+            return "object_dock"
+        elif response == "swap":
+            return "swap"
+        elif response == "storage":
+            return "storage"
+        
+        # otherwise, likely processing spoken response or some other type of storage
+        parsed_words = response.split()
+        object_dock_words = ["bench", "dock", "desk", "me", "workstation", "human", "offloading"]
+        swap_words = ["swap", "exchange", "trade", "switch", "empty"]
+
+        if any(word.strip().lower() in object_dock_words for word in parsed_words):
+            word = next((word for word in parsed_words if word.strip().lower() in object_dock_words), None)
+            self.think(f"I heard '{word}' in the response, so I'll assume you meant 'object_dock'.")
+            return "object_dock"
+        elif any(word.strip().lower() in swap_words for word in parsed_words):
+            word = next((word for word in parsed_words if word.strip().lower() in swap_words), None)
+            self.think(f"I heard '{word}' in the response, so I'll assume you meant 'swap'.")
+            return "swap"
+        
+        if self.reasoning:
+            reasoning_response = self.reason(f"The user said '{response}'. Do you think this is an 'object_dock', 'swap', or 'storage'? Reply with only one of these words. For context: an object_dock is a place like a workbench or manned station where a humans alone will be interacting with objects brought here (e.g. 'bench, me, human, desk'), a swap is a place to exchange an object that is always intentionally empty and will only interact with a robot (e.g. 'swap, exchange, trade'), and storage is anything that doesn't obviously fit into either of those two categories.")
+            if reasoning_response == "object_dock":
+                return "object_dock"
+            elif reasoning_response == "swap":
+                return "swap"
+
+        # If it's not an object_dock or swap, assume it's exactly whatever they said ("storage" doesn't have any special functionality, it's
+        # just "not a dock or swap")
+        return response
+
+
     def respond(self, prompt: str) -> str:
         response = self.reason(prompt)
         if response:

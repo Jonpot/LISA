@@ -1,3 +1,4 @@
+from typing import List
 import cv2
 import os
 import numpy as np
@@ -35,15 +36,16 @@ class LabObject:
     def __init__(self, name: str, tag_id: int, position: str):
         self.name = name
         self.tag_id = tag_id
-        self.home_position = position
+        self.last_storage_position = position
         self.special_handling = False
         self.current_position = position
+        self.storage_position_type = "storage"
 
     def __str__(self):
-        return f"Tag ID: {self.tag_id}, Position: {self.home_position}, Special Handling: {self.special_handling}"
+        return f"Tag ID: {self.tag_id}, Position: {self.current_position}, Special Handling: {self.special_handling}"
 
     def jsonify(self):
-        return {"tag_id": self.tag_id, "position": self.home_position, "special_handling": self.special_handling}
+        return {"tag_id": self.tag_id, "position": self.last_storage_position, "special_handling": self.special_handling}
 
 class Database:
     def __init__(self):
@@ -96,12 +98,29 @@ class Database:
         if position not in self.positions:
             raise ValueError(f"Position {position} is not a valid position.")
         self.lab_objects[name] = LabObject(name, tag_id, position)
+        self.lab_objects[name].storage_position_type = self.positions[position].pos_type
     
     def get_home_pose(self, lab_object: LabObject) -> list[float]:
-        return self.positions[lab_object.home_position].pose
+        return self.positions[lab_object.last_storage_position].pose
 
     def jsonify(self):
         return {'lab_objects': {key: value.jsonify() for key, value in self.lab_objects.items()}, 'positions': {key: value.jsonify() for key, value in self.positions.items()}}
+    
+    @property
+    def all_position_types(self) -> List[str]:
+        """
+        Returns a list of all position types in the database
+        """
+        return list(set([position.pos_type for position in self.positions.values()]))
+    
+    def open_position_of_type(self, position_type: str) -> Position:
+        """
+        Returns the first position of the given type that is not occupied
+        """
+        for position in self.positions.values():
+            if position.pos_type == position_type and not position.occupied:
+                return position
+        return None
 
 class Robot:
     def __init__(self, 
@@ -277,28 +296,6 @@ class Robot:
 
         calibration_tag = self.identify_calibration_tag()
 
-        # check if there is a position with pos_type "object_dock" (not named "object_dock")
-        if len([pos for pos in self.database.positions.values() if pos.pos_type == "object_dock"]) == 0:
-            while self.vi.ask_boolean("Would you like to add an object dock to the database?"):
-                if not self.vi.ask_boolean("Let's add object docks first. These are positions where the robot can bring objects to scientists. Go ahead and place the calibration object on the object dock for the a workspace, then let me know when you're ready to continue."):
-                    self.vi.speak("Hm, sounds like you don't want to continue. I'm aborting the process.")
-                    break
-            
-                self.vi.speak("Alright, I'm going to look for it now.")
-                detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
-                while detection is None:
-                    self.vi.speak("I couldn't find the calibration object. Trying again.")
-                    detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
-
-                self.vi.think("I found the calibration object. I'm going to approach it now.")
-                self.mover.approach_apriltag_detection(self.camera, detection, threshold=425)
-                self.mover.waggle_gripper()
-                dock_name = self.vi.ask("What is the name of this object dock?")
-                while dock_name in self.database.positions:
-                    dock_name = self.vi.ask("That position is already in the database. Please provide a different name.")
-                self.database.add_position(dock_name, self.mover.robot_position, self.vi, pos_type="object_dock")
-                self.mover.object_dock = self.mover.robot_position
-
         while self.vi.ask_boolean("Would you like to add a new position to the database?"):
             if not self.vi.ask_boolean("Great! Go ahead and place the calibration object on the position you want to save, then let me know when you're ready to continue."):
                 self.vi.speak("Hm, sounds like you don't want to continue. I'm aborting the process.")
@@ -316,29 +313,10 @@ class Robot:
             position_name = self.vi.ask("What is the name of this position?")
             while position_name in self.database.positions:
                 position_name = self.vi.ask("That position is already in the database. Please provide a different name.")
+            position_type = self.vi.ask_position_type("What type of position is this? (object_dock, swap, storage, etc.)")
             self.vi.think(f"This is the {position_name}, I'm updating my internal memory of this position.")
-            self.database.add_position(position_name, self.mover.robot_position, self.vi, pos_type = "storage")
+            self.database.add_position(position_name, self.mover.robot_position, self.vi, pos_type = position_type)
         
-        while self.vi.ask_boolean("Would you like to add any intentionally empty swap positions to the database?"):
-            if not self.vi.ask_boolean("Great! Go ahead and place the calibration object on the position you want to save, then let me know when you're ready to continue."):
-                self.vi.speak("Hm, sounds like you don't want to continue. I'm aborting the process.")
-                break
-            
-            self.vi.speak("Alright, I'm going to look for it now.")
-            detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
-            while detection is None:
-                self.vi.think("I couldn't find the calibration object. I'm going to try again.")
-                detection = self.mover.scan_for_apriltag(self.camera, calibration_tag)
-
-            self.vi.think("I found the calibration object. I'm going to approach it now.")
-            self.mover.approach_apriltag_detection(self.camera, detection, threshold=425)
-            self.mover.waggle_gripper()
-            swap_name = self.vi.ask("What is the name of this swap position?")
-            while swap_name in self.database.positions:
-                swap_name = self.vi.ask("That position is already in the database. Please provide a different name.")
-            self.vi.think(f"This is the {swap_name}, I'm updating my internal memory of this position.")
-            self.database.add_position(swap_name, self.mover.robot_position, self.vi, pos_type = "swap")
-
         self.recent_calibration = True
 
     def scan_and_populate_database(self):
@@ -409,7 +387,7 @@ class Robot:
                     return self.database.lab_objects[name]
         elif position is not None:
             for lab_object_name, lab_object in self.database.lab_objects.items():
-                if self.database.lab_objects[lab_object_name].home_position == position:
+                if self.database.lab_objects[lab_object_name].last_storage_position == position:
                     return lab_object
         elif pose is not None:
             for lab_object_name, lab_object in self.database.lab_objects.items():
@@ -565,7 +543,7 @@ class Robot:
             return
 
         # If the object isn't currently at it's home position, fail (not implemented behavior)
-        if lab_object.current_position != lab_object.home_position:
+        if lab_object.current_position != lab_object.last_storage_position:
             self.vi.speak(f"Sorry, I can't retrieve {object_name} right now. It's in use by another scientist.")
 
         self.move_object(lab_object.current_position, lab_object, objective_position)
@@ -580,7 +558,7 @@ class Robot:
             self.vi.speak(f"Hmm, {object_name} isn't in the database. I can't return it.")
             return
 
-        self.move_object(lab_object.current_position, lab_object, lab_object.home_position)
+        self.move_object(lab_object.current_position, lab_object, lab_object.last_storage_position)
 
 
     def move_object(self, start_position: Position | None = None, object_to_move: LabObject | None = None, end_position: Position | None = None):
@@ -624,8 +602,11 @@ class Robot:
             self.vi.think(f"Detected object with tag id {detection_id}, which is {object_to_move.name}.")
 
         if end_position is None:
-            # Assume we're returning the object to its home position
-            end_position = self.database.positions[object_to_move.home_position]
+            # Assume we're returning the object to a position consistent with it's storage type
+            end_position = self.database.open_position_of_type(object_to_move.storage_position_type)
+            if end_position is None:
+                # then just return it to where we got it from
+                end_position = self.database.positions[object_to_move.last_storage_position]
 
         # Verify the return position is not occupied if its not a dock
         if end_position.pos_type != "object_dock":
