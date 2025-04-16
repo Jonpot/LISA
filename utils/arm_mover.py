@@ -41,19 +41,15 @@ class ArmMover:
 
         # Common Positions
         self.home = [0.57, 0.00, 0.42, 90, 0, 90] # position 3
-        #self.object_dock = [0.80, -0.04, 0.10, 90, 0, 90] # OLD POSITION
-        self.object_dock = [-0.24, 0.45, 0.09, 90, 0, 171] # New position on second table
-        self.sentry_position1 = [0.42, -0.30, 0.42, 90, 0, 46]
-        self.sentry_position2 = [0.53, -0.13, 0.42, 90, 0, 66]
-        self.sentry_position3 = self.home
-        self.sentry_position4 = [0.54, 0.10, 0.42, 90, 0, 110]
-        self.sentry_position5 = [0.42, -0.30, 0.22, 90, 0, 46]
-        self.sentry_position6 = [0.53, -0.13, 0.22, 90, 0, 66]
-        self.sentry_position7 = [0.57, 0.00, 0.22, 90, 0, 90]
-        self.sentry_position8 = [0.54, 0.10, 0.22, 90, 0, 110]
-        #self.positions_list = [self.sentry_position1, self.sentry_position2, self.sentry_position3, self.sentry_position4,
-        #                       self.sentry_position5, self.sentry_position6, self.sentry_position7, self.sentry_position8]
-        self.positions_list = [self.sentry_position6, self.sentry_position7, self.sentry_position8]
+        
+        self.position1 = [0.52, 0.00, 0.16, 90, 0, 90]
+        self.position2 = [0.52, -0.15, 0.16, 90, 0, 90]
+        self.position3 = self.home
+        self.position4 = [-0.25, 0.26, 0.06, -90, 180, 90]
+        self.position5 = [-0.25, 0.65, 0.06, -90, 180, 90]
+        
+        
+        self.positions_list = [self.position1, self.position2, self.position3, self.position4, self.position5]
         self.current_position = 2
 
 
