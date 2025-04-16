@@ -140,7 +140,7 @@ class ArmMover:
         success = self._execute_movement(action, blocking)
         return success
     
-    def move_to_pose(self, position: list[int], blocking=True, interval=0.1, duration=5) -> bool:
+    def move_to_pose(self, position: list[int], blocking=True, interval=0.5, duration=10) -> bool:
         """
         Move the arm to a pre-defined position
         :param position: list of 6 integers representing the position
@@ -160,8 +160,8 @@ class ArmMover:
                     # Get the current timestamp with milliseconds
                     timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
 
-                    # Append the position and timestamp to the log entries list
-                    log_entries.append([timestamp] + position)
+                    # Append the dynamically measured robot position and timestamp to the log entries list
+                    log_entries.append([timestamp] + self.robot_position)
 
                     # Update the last log time
                     last_log_time = current_time
@@ -171,9 +171,9 @@ class ArmMover:
         logging_thread.start()
 
         # Start the movement
-        #success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+        success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
 
-        success = self.plan_path_to_destination(position, blocking=blocking)
+        #success = self.plan_path_to_destination(position, blocking=blocking)
 
         # Wait for the logging thread to finish
         logging_thread.join()
@@ -597,10 +597,10 @@ class ArmMover:
           - z_center and delta_z: set to the vertical limits of the forbidden zone.
         """
         center_xy = [0.0, 0.0]  # Update if your unsafe region is offset.
-        a = 0.45              # Adjust these radii to cover only the truly unsafe area.
+        a = 0.48              # Adjust these radii to cover only the truly unsafe area.
         b = 0.275
         z_center = 0.34       # Adjust based on your safe z.
-        delta_z = 0.15        # Lower delta_z to shrink the forbidden vertical zone.
+        delta_z = 0.2        # Lower delta_z to shrink the forbidden vertical zone.
         return center_xy, a, b, z_center - delta_z, z_center + delta_z
 
     def is_path_safe_ellipse(self, start: list[float], end: list[float]) -> bool:
@@ -625,7 +625,7 @@ class ArmMover:
                 return False
         return True
 
-    def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = True) -> bool:
+    def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = False) -> bool:
         """
         Plans a safe linear path toward the destination.
         If a direct path is safe, the arm moves directly.
@@ -648,7 +648,7 @@ class ArmMover:
                 input("Press Enter to execute the path...")
             return self.execute_path(simulated_path)
 
-    def interpolate_path(self, waypoints, steps_per_segment=10):
+    def interpolate_path(self, waypoints, steps_per_segment=3):
         """
         Linearly interpolate between each pair of waypoints to generate smoother substeps.
         """
@@ -662,7 +662,7 @@ class ArmMover:
         interpolated.append(waypoints[-1])  # include final point
         return interpolated
 
-    def execute_path(self, waypoints: list[list[float]], steps_per_segment: int = 5, delay: float = 0.0) -> bool:
+    def execute_path(self, waypoints: list[list[float]], steps_per_segment: int = 3, delay: float = 0.0) -> bool:
         """
         Executes the interpolated path.
         Intermediate waypoints are moved non-blockingly, and the final move is blocking so we ensure the destination is reached.
@@ -676,20 +676,37 @@ class ArmMover:
         # Final move blocking to ensure completion
         return self.arbitrary_cartesian_movement(*interpolated_path[-1], blocking=True)
 
+    def smooth_path(self, path_xyz: list[tuple]) -> list[tuple]:
+        """
+        Smooths the given path using a simple moving average filter.
+        The first and last point remain unchanged.
+        """
+        if len(path_xyz) < 3:
+            return path_xyz
+        smoothed = [path_xyz[0]]
+        for i in range(1, len(path_xyz) - 1):
+            prev_pt = path_xyz[i - 1]
+            cur_pt = path_xyz[i]
+            next_pt = path_xyz[i + 1]
+            avg_pt = (round((prev_pt[0] + cur_pt[0] + next_pt[0]) / 3, 3),
+                      round((prev_pt[1] + cur_pt[1] + next_pt[1]) / 3, 3),
+                      round((prev_pt[2] + cur_pt[2] + next_pt[2]) / 3, 3))
+            smoothed.append(avg_pt)
+        smoothed.append(path_xyz[-1])
+        return smoothed
+
     def a_star_path_planning(self, start: list[float], goal: list[float], resolution=0.05) -> list[list[float]]:
         """
         A* path planning in 3D (x, y, z) over a grid. Orientation is linearly interpolated.
-        The safety check (is_safe) is applied on the (x,y) coordinates and on z.
+        The safety check (is_safe) is applied on the (x,y,z) coordinates.
         """
         from queue import PriorityQueue
 
         center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
 
         def is_safe(x, y, z):
-            # Check if (x,y) is inside the forbidden ellipse and z is within the dangerous vertical range.
-            # Adjust 1.1 as the nominal threshold.
             val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
-            if val < 1.2 and (z_min <= z <= z_max):
+            if val < 1.13 and (z_min <= z <= z_max):
                 return False
             return True
 
@@ -715,7 +732,6 @@ class ArmMover:
             if heuristic(current, goal_state) < resolution * 1.5:
                 break
 
-            # Iterate over neighbors in 3D: include dx,dy,dz offsets.
             for dx in [-resolution, 0, resolution]:
                 for dy in [-resolution, 0, resolution]:
                     for dz in [-resolution, 0, resolution]:
@@ -733,19 +749,29 @@ class ArmMover:
                         queue.put((total_cost, neighbor))
                         parent[neighbor] = current
 
-        # Reconstruct the path in 3D.
+        # Reconstruct path in 3D.
+        path_xyz = []
         if parent:
             current = min(parent, key=lambda p: heuristic(p, goal_state))
         else:
             current = start_state
-        path_xyz = []
         while current in parent:
             path_xyz.append(current)
             current = parent[current]
         path_xyz.append(start_state)
         path_xyz.reverse()
 
-        # Interpolate orientation between start[3:] and goal[3:] linearly.
+        # Filter out consecutive duplicates.
+        unique_path = [path_xyz[0]]
+        for pt in path_xyz[1:]:
+            if pt != unique_path[-1]:
+                unique_path.append(pt)
+        path_xyz = unique_path
+
+        # Smooth the path to reduce zigzags.
+        path_xyz = self.smooth_path(path_xyz)
+
+        # Interpolate orientation linearly.
         path = []
         for i, (x, y, z) in enumerate(path_xyz):
             t = i / (len(path_xyz) - 1) if len(path_xyz) > 1 else 0
