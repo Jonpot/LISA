@@ -15,7 +15,7 @@ robot_connection.create_connection()
 mover = ArmMover(robot_connection)
 
 # Execute planning and movement with debug enabled
-for position in [mover.position1, mover.position2, mover.position3, mover.position4, mover.position5]:
+for position in [mover.position1,mover.position2,mover.position3,mover.position4, mover.position5]:
 
     result = mover.plan_path_to_destination(position,debug=True)
     if result:

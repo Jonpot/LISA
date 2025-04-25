@@ -3,6 +3,7 @@ This class commands the robot to go to some position and catch an object
 """
 import cv2
 import numpy as np
+import pybullet as p
 
 from utils.connect import RobotConnect
 from kortex_api.autogen.messages import Base_pb2
@@ -13,6 +14,8 @@ from scipy.spatial.transform import Rotation
 from utils.vision import AprilTagDetector
 import csv
 from datetime import datetime
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 class ArmMover:
     def __init__(self, robot_connection: RobotConnect):
@@ -596,11 +599,11 @@ class ArmMover:
           - a and b: set to the radii that actually block unreachable regions.
           - z_center and delta_z: set to the vertical limits of the forbidden zone.
         """
-        center_xy = [0.0, 0.0]  # Update if your unsafe region is offset.
-        a = 0.48              # Adjust these radii to cover only the truly unsafe area.
-        b = 0.275
+        center_xy = [0.03, 0.0]  # Update if your unsafe region is offset.
+        a = 0.46             # Adjust these radii to cover only the truly unsafe area.
+        b = 0.30
         z_center = 0.34       # Adjust based on your safe z.
-        delta_z = 0.2        # Lower delta_z to shrink the forbidden vertical zone.
+        delta_z = 0.18        # Lower delta_z to shrink the forbidden vertical zone.
         return center_xy, a, b, z_center - delta_z, z_center + delta_z
 
     def is_path_safe_ellipse(self, start: list[float], end: list[float]) -> bool:
@@ -609,12 +612,12 @@ class ArmMover:
         Samples N points and uses a margin factor increased by an extra_margin plus an extra tolerance for x,y and z.
         """
         center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
-        z_extra = 0.2  # additional tolerance in z
-        xy_extra = 0.02  # additional tolerance in x and y
+        z_extra = 0.01  # additional tolerance in z
+        xy_extra = 0.01  # additional tolerance in x and y
         N = 40  # number of samples
-        base_margin = 1.15  
-        extra_margin = 0.25  # additional delta for XY
-        margin = base_margin + extra_margin + xy_extra
+        base_margin = 0.5  
+        # extra_margin = 0.25  # additional delta for XY
+        margin = base_margin + xy_extra
         start_np = np.array(start[:3])
         end_np = np.array(end[:3])
         for t in np.linspace(0, 1, N):
@@ -625,30 +628,151 @@ class ArmMover:
                 return False
         return True
 
-    def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = False) -> bool:
+    import matplotlib.pyplot as plt
+    def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = True) -> bool:
         """
-        Plans a safe linear path toward the destination.
-        If a direct path is safe, the arm moves directly.
-        Otherwise, A* path planning is used.
-        When debug is True, outputs the simulated path (x, y values) and waits for key input before executing.
+        Plans a safe path from current position to destination avoiding a forbidden ellipse region.
+        If the direct path is unsafe, applies a buffer in +y direction and projects waypoints when needed.
+        All waypoints receive a +y offset to improve clearance.
         """
-        current_pose = self.robot_position
-        if self.is_path_safe_ellipse(current_pose, dest):
-            if debug:
-                print("Direct path is safe. Moving directly.")
-            return self.arbitrary_cartesian_movement(dest[0], dest[1], dest[2], dest[3], dest[4], dest[5], blocking=blocking)
-        else:
-            if debug:
-                print("Direct path crosses forbidden area; using A* path planner.")
-            simulated_path = self.a_star_path_planning(current_pose, dest)
-            if debug:
-                print("Simulated Path (x, y):")
-                for point in simulated_path:
-                    print(f"({point[0]:.3f}, {point[1]:.3f})")
-                input("Press Enter to execute the path...")
-            return self.execute_path(simulated_path)
+        import numpy as np
+        import matplotlib.pyplot as plt
 
-    def interpolate_path(self, waypoints, steps_per_segment=3):
+        current_pose = self.robot_position
+        forbidden_center, a, b, _, _ = self.calculate_forbidden_ellipse()
+        threshold = 0.075
+        rpy = current_pose[3:6]
+
+        def is_safe_line(p1, p2, center, a, b, margin=0.01):
+            steps = 20
+            for alpha in np.linspace(0, 1, steps):
+                pt = p1 * (1 - alpha) + p2 * alpha
+                dx = (pt[0] - center[0]) / (a + margin)
+                dy = (pt[1] - center[1]) / (b + margin)
+                if dx**2 + dy**2 < 1:
+                    return False
+            return True
+
+        def project_and_offset_outside(pt, center, a, b, offset):
+            v = pt - center
+            if np.allclose(v, 0):
+                v = np.array([1e-3, 0])
+            scale = np.sqrt((v[0] / a)**2 + (v[1] / b)**2)
+            boundary = center + v / scale
+            direction = (boundary - center) / np.linalg.norm(boundary - center)
+            return boundary + direction * offset
+
+        start = np.array(current_pose[:2])
+        goal = np.array(dest[:2])
+        z0, z1 = current_pose[2], dest[2]
+
+        if is_safe_line(start, goal, forbidden_center, a, b):
+            if debug:
+                print("Direct path is safe.")
+            return self.arbitrary_cartesian_movement(*dest, blocking=blocking)
+
+        if debug:
+            print("Direct path is unsafe.")
+
+        # Step 1: Move current position +0.10 in Y
+        buffered_pose = current_pose.copy()
+        #buffered_pose[1] += 0.2
+        if not self.arbitrary_cartesian_movement(*buffered_pose, blocking=True):
+            print("Failed to move to initial buffered position.")
+            return False
+
+        # Step 2: Start path planning from new pose
+        current_pose = self.robot_position
+        start = np.array(current_pose[:2])
+        rpy = current_pose[3:6]
+        waypoints = [start]
+
+        if not is_safe_line(start, goal, forbidden_center, a, b):
+            mid = (start + goal) / 2
+            safe_mid = project_and_offset_outside(mid, forbidden_center, a, b, threshold)
+
+            if not is_safe_line(start, safe_mid, forbidden_center, a, b):
+                mid1 = (start + safe_mid) / 2
+                safe_mid1 = project_and_offset_outside(mid1, forbidden_center, a, b, threshold)
+                waypoints.append(safe_mid1)
+
+            waypoints.append(safe_mid)
+
+            if not is_safe_line(safe_mid, goal, forbidden_center, a, b):
+                mid2 = (safe_mid + goal) / 2
+                safe_mid2 = project_and_offset_outside(mid2, forbidden_center, a, b, threshold)
+                waypoints.append(safe_mid2)
+
+        waypoints.append(goal)
+
+        # Apply +0.05 Y-buffer to all waypoints
+        buffered_waypoints = []
+        for i, (x, y) in enumerate(waypoints):
+            alpha = i / (len(waypoints) - 1)
+            z = z0 * (1 - alpha) + z1 * alpha
+            buffered_waypoints.append([x, y , z] + list(rpy))
+
+        if debug:
+            fig, ax = plt.subplots()
+            wp_np = np.array(buffered_waypoints)
+            ax.plot(wp_np[:, 0], wp_np[:, 1], 'y-', label='Planned Path')
+            ax.scatter(start[0], start[1], c='g', label='Start', marker='x')
+            ax.scatter(goal[0], goal[1] + 0, c='b', label='Goal', marker='x')
+            for i, pt in enumerate(waypoints[1:-1], 1):
+                ax.scatter(pt[0], pt[1] + 0, marker='x', label=f'Waypoint {i}', alpha=0.8)
+
+            theta = np.linspace(0, 2 * np.pi, 100)
+            xe = forbidden_center[0] + a * np.cos(theta)
+            ye = forbidden_center[1] + b * np.sin(theta)
+            ax.plot(xe, ye, 'r--', label='Forbidden Zone')
+
+            ax.set_aspect('equal')
+            ax.legend()
+            ax.set_title("Path with +Y Buffers & Forbidden Zone Avoidance")
+            plt.show()
+
+        return self.execute_path(buffered_waypoints, delay=0.01, steps_per_segment=3)
+
+
+
+
+    def arc_around_obstacle(self, start, goal, center, height_offset=0.05, num_points=50):
+        """
+        Plan a clean fixed-height arc *above* the forbidden ellipse in XY.
+        The arc radius is set based on start/goal distance to center + margin.
+        """
+        import numpy as np
+        start = np.array(start[:2])
+        goal = np.array(goal[:2])
+        center = np.array(center[:2])
+
+        # Define radius slightly larger than forbidden ellipse
+        r_start = np.linalg.norm(start - center)
+        r_goal = np.linalg.norm(goal - center)
+        radius = max(r_start, r_goal) + 0.03  # fixed clearance
+
+        # Angle from center to start/goal
+        theta_start = np.arctan2(start[1] - center[1], start[0] - center[0])
+        theta_goal = np.arctan2(goal[1] - center[1], goal[0] - center[0])
+
+        # Shortest arc direction
+        if theta_start < 0: theta_start += 2 * np.pi
+        if theta_goal < 0: theta_goal += 2 * np.pi
+        delta = theta_goal - theta_start
+        if delta > np.pi:
+            theta_goal -= 2 * np.pi
+        elif delta < -np.pi:
+            theta_goal += 2 * np.pi
+
+        thetas = np.linspace(theta_start, theta_goal, num_points)
+        arc_xy = center.reshape(1, 2) + radius * np.stack([np.cos(thetas), np.sin(thetas)], axis=1)
+
+        # Apply a fixed height boost (Z) or hold Z constant
+        arc_2d = arc_xy.tolist()
+        return arc_2d
+
+
+    def interpolate_path(self, waypoints, steps_per_segment=5):
         """
         Linearly interpolate between each pair of waypoints to generate smoother substeps.
         """
@@ -662,18 +786,19 @@ class ArmMover:
         interpolated.append(waypoints[-1])  # include final point
         return interpolated
 
-    def execute_path(self, waypoints: list[list[float]], steps_per_segment: int = 3, delay: float = 0.0) -> bool:
+    def execute_path(self, waypoints: list[list[float]], steps_per_segment: int = 5, delay: float = 0.01) -> bool:
         """
         Executes the interpolated path.
-        Intermediate waypoints are moved non-blockingly, and the final move is blocking so we ensure the destination is reached.
+        Intermediate waypoints are moved non-blockingly, and the final move is blocking to ensure the destination is reached.
         """
         interpolated_path = self.interpolate_path(waypoints, steps_per_segment)
+        
         for point in interpolated_path[:-1]:
-            # Send non-blocking move commands for intermediate points
-            self.arbitrary_cartesian_movement(*point, blocking=False)
+            self.arbitrary_cartesian_movement(*point, blocking=True)  # ← non-blocking for smooth motion
             if delay > 0:
                 time.sleep(delay)
-        # Final move blocking to ensure completion
+        
+        # Final move is blocking
         return self.arbitrary_cartesian_movement(*interpolated_path[-1], blocking=True)
 
     def smooth_path(self, path_xyz: list[tuple]) -> list[tuple]:
@@ -695,7 +820,45 @@ class ArmMover:
         smoothed.append(path_xyz[-1])
         return smoothed
 
-    def a_star_path_planning(self, start: list[float], goal: list[float], resolution=0.05) -> list[list[float]]:
+    def visualize_path_and_forbidden_zone(self, path_xyz: list[tuple], forbidden_params: tuple):
+        """
+        Visualizes the forbidden zone and the planned path in 3D.
+        :param path_xyz: List of (x, y, z) tuples representing the path.
+        :param forbidden_params: Tuple containing forbidden ellipse parameters (center_xy, a, b, z_min, z_max).
+        """
+        center_xy, a, b, z_min, z_max = forbidden_params
+
+        # Create a 3D plot
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Plot the forbidden zone as an ellipsoid
+        u = np.linspace(0, 2 * np.pi, 100)
+        v = np.linspace(0, np.pi, 100)
+        x = a * np.outer(np.cos(u), np.sin(v)) + center_xy[0]
+        y = b * np.outer(np.sin(u), np.sin(v)) + center_xy[1]
+        z = (z_max - z_min) * np.outer(np.ones(np.size(u)), np.cos(v)) + z_min
+        ax.plot_surface(x, y, z, color='r', alpha=0.3, label="Forbidden Zone")
+
+        # Plot the planned path
+        path_xyz = np.array(path_xyz)
+        ax.plot(path_xyz[:, 0], path_xyz[:, 1], path_xyz[:, 2], color='b', label="Planned Path")
+
+        # Highlight points inside the forbidden zone
+        for point in path_xyz:
+            x, y, z = point
+            ellipse_val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
+            if ellipse_val < 1.0 and z_min <= z <= z_max:
+                ax.scatter(x, y, z, color='orange', label="Inside Forbidden Zone")
+
+        # Set labels and legend
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.legend()
+        plt.show()
+
+    def a_star_path_planning(self, start: list[float], goal: list[float], resolution=0.02) -> list[list[float]]:
         """
         A* path planning in 3D (x, y, z) over a grid. Orientation is linearly interpolated.
         The safety check (is_safe) is applied on the (x,y,z) coordinates.
@@ -705,8 +868,10 @@ class ArmMover:
         center_xy, a, b, z_min, z_max = self.calculate_forbidden_ellipse()
 
         def is_safe(x, y, z):
-            val = ((x - center_xy[0]) / a)**2 + ((y - center_xy[1]) / b)**2
-            if val < 1.13 and (z_min <= z <= z_max):
+            # Add stricter margin to forbidden zone
+            margin_factor = 1.2  # Increase margin to ensure safety
+            val = ((x - center_xy[0]) / (a * margin_factor))**2 + ((y - center_xy[1]) / (b * margin_factor))**2
+            if val < 1.0 and (z_min <= z <= z_max):
                 return False
             return True
 
@@ -770,6 +935,10 @@ class ArmMover:
 
         # Smooth the path to reduce zigzags.
         path_xyz = self.smooth_path(path_xyz)
+
+        # Visualize the forbidden zone and the path
+        forbidden_params = self.calculate_forbidden_ellipse()
+        self.visualize_path_and_forbidden_zone(path_xyz, forbidden_params)
 
         # Interpolate orientation linearly.
         path = []
