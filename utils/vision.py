@@ -132,7 +132,7 @@ class AprilTagDetector:
         """
         attempt = 0
 
-        while attempt < 3:
+        while attempt < 10:
             if debug:
                 print(f"Attempt {attempt}")
             

@@ -1,0 +1,80 @@
+{
+    "lab_objects": {
+        "Agarose_high_melting_temperature_medium_resolution": {
+            "position": "pos1",
+            "special_handling": true,
+            "tag_id": 9,
+            "description": "Chemical; A powdered laboratory reagent used for gel electrophoresis, high melting temperature and medium resolution; non-hazardous and stable under standard conditions."
+        },
+        "BRAND pipette tips 1-10mL in TipBox": {
+            "position": "pos3",
+            "special_handling": false,
+            "tag_id": 26,
+            "description": "TipBox; non-hazardous and stable under standard conditions."
+        },
+        "BRAND pipette tips volume 1-10 mL, TipBox": {
+            "position": "pos2",
+            "special_handling": false,
+            "tag_id": 4,
+            "description": "TipBox; non-hazardous and stable under standard conditions."
+        }
+    },
+    "positions": {
+        "dock1": {
+            "blocked_by": [],
+            "name": "dock1",
+            "occupied": false,
+            "pos_type": "object_dock",
+            "pose": [
+                0.5198018550872803,
+                -0.2312869131565094,
+                0.1685187816619873,
+                90.05670166015625,
+                -0.01521969959139824,
+                89.96290588378906
+            ]
+        },
+        "pos1": {
+            "blocked_by": [],
+            "name": "pos1",
+            "occupied": false,
+            "pos_type": "storage",
+            "pose": [
+                0.6699795126914978,
+                -1.0218926036031917e-05,
+                0.15987034142017365,
+                90.01345825195312,
+                -0.0005823447718285024,
+                89.99984741210938
+            ]
+        },
+        "pos2": {
+            "blocked_by": [],
+            "name": "pos2",
+            "occupied": false,
+            "pos_type": "storage",
+            "pose": [
+                0.7593557238578796,
+                -0.1307031363248825,
+                0.1726568341255188,
+                90.10088348388672,
+                -0.007822948507964611,
+                89.91133117675781
+            ]
+        },
+        "pos3": {
+            "blocked_by": [],
+            "name": "pos3",
+            "occupied": false,
+            "pos_type": "storage",
+            "pose": [
+                0.7197991013526917,
+                -0.2198493480682373,
+                0.1693381667137146,
+                90.04558563232422,
+                0.00857227947562933,
+                90.01559448242188
+            ]
+        }
+    }
+}

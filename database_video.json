@@ -1,0 +1,116 @@
+{
+    "lab_objects": {
+        "Agarose_high_melting_temperature_medium_resolution": {
+            "current_position_name": "position 1",
+            "description": "Laboratory chemical used for various applications, requiring dry, cool and well-ventilated storage away from incompatible materials.",
+            "position": "position 1",
+            "special_handling": true,
+            "storage_position_type": "storage",
+            "tag_id": 9
+        },
+        "BRAND pipette tips 1-10 mL, TipBox": {
+            "current_position_name": "position 2",
+            "description": "Pipette tips from BRAND suitable for volumes from 1-10 mL, made from colorless polypropylene, non-sterile and autoclavable.",
+            "position": "position 2",
+            "special_handling": false,
+            "storage_position_type": "storage",
+            "tag_id": 4
+        },
+        "BRAND pipette tips non-sterile 1-10 mL": {
+            "current_position_name": "position 4",
+            "description": "Pipette tips for volumes from 1 to 10 mL, manufactured under cleanroom conditions, autoclavable, suitable for use with various pipettes.",
+            "position": "position 4",
+            "special_handling": false,
+            "storage_position_type": "storage",
+            "tag_id": 26
+        }
+    },
+    "positions": {
+        "dock 1": {
+            "blocked_by": [],
+            "name": "dock 1",
+            "occupied": false,
+            "pos_type": "object_dock",
+            "pose": [
+                -0.3700001835823059,
+                0.041995909810066223,
+                0.04989220201969147,
+                -89.99381256103516,
+                -179.99049377441406,
+                90.00051879882812
+            ]
+        },
+        "dock 2": {
+            "blocked_by": [],
+            "name": "dock 2",
+            "occupied": false,
+            "pos_type": "object_dock",
+            "pose": [
+                -0.34999585151672363,
+                0.6499407291412354,
+                0.04981004074215889,
+                -89.99388122558594,
+                -179.98294067382812,
+                89.99919128417969
+            ]
+        },
+        "position 1": {
+            "blocked_by": [],
+            "name": "position 1",
+            "occupied": false,
+            "pos_type": "storage",
+            "pose": [
+                0.788529098033905,
+                0.1163092777132988,
+                0.20787857472896576,
+                90.06724548339844,
+                0.002513936022296548,
+                89.97441101074219
+            ]
+        },
+        "position 2": {
+            "blocked_by": [],
+            "name": "position 2",
+            "occupied": false,
+            "pos_type": "storage",
+            "pose": [
+                0.7891347408294678,
+                -0.055015940219163895,
+                0.20627175271511078,
+                90.0412826538086,
+                0.00990510918200016,
+                90.01559448242188
+            ]
+        },
+        "position 3": {
+            "blocked_by": [
+                "position 2"
+            ],
+            "name": "position 3",
+            "occupied": false,
+            "pos_type": "storage",
+            "pose": [
+                0.903685986995697,
+                -0.07131783664226532,
+                0.21101251244544983,
+                90.02803039550781,
+                0.013813434168696404,
+                90.01194763183594
+            ]
+        },
+        "position 4": {
+            "blocked_by": [],
+            "name": "position 4",
+            "occupied": false,
+            "pos_type": "swap",
+            "pose": [
+                0.7898170948028564,
+                -0.25320965051651,
+                0.20286954939365387,
+                90.03927612304688,
+                0.011879736557602882,
+                90.02155303955078
+            ]
+        }
+    }
+}

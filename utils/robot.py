@@ -43,10 +43,10 @@ class LabObject:
         self.description = None
 
     def __str__(self):
-        return f"Tag ID: {self.tag_id}, Position: {self.current_position_name}, Special Handling: {self.special_handling}"
+        return f"Tag ID: {self.tag_id}, Position: {self.current_position_name}, Special Handling: {self.special_handling}, Description: {self.description}"
 
     def jsonify(self):
-        return {"tag_id": self.tag_id, "position": self.last_storage_position, "special_handling": self.special_handling}
+        return {"tag_id": self.tag_id, "position": self.last_storage_position, "special_handling": self.special_handling, "description": self.description, "storage_position_type": self.storage_position_type, "current_position_name": self.current_position_name}
 
 class Database:
     def __init__(self):
@@ -171,6 +171,12 @@ class Robot:
                     for key, value in jsonified['lab_objects'].items():
                         self.database.add_object(key, value['tag_id'], value['position'])
                         self.database.lab_objects[key].special_handling = value['special_handling']
+                        try:
+                            self.database.lab_objects[key].description = value['description']
+                            self.database.lab_objects[key].storage_position_type = value['storage_position_type']
+                            self.database.lab_objects[key].current_position_name = value['current_position_name']
+                        except KeyError:
+                            pass
             else:
                 self.database = Database()
 
@@ -333,6 +339,10 @@ class Robot:
         
         self.recent_calibration = True
 
+        # Save the database
+        with open("database.json", "w") as file:
+            json.dump(self.database.jsonify(), file)
+
     def scan_and_populate_database(self):
         """
         Works alongside a lab assistant to populate the database
@@ -353,10 +363,11 @@ class Robot:
 
         # Go to every position and scan for objects
         for position_name in self.database.positions:
-            self.mover.move_to_pose(self.mover.home)
+            #self.mover.move_to_pose(self.mover.home)
             self.vi.think(f"Moving to {position_name}.")
             self.mover.move_to_pose(self.database.positions[position_name].pose)
             self.vi.think(f"Scanning {position_name} for objects.")
+            time.sleep(0.5)
             detections = self.camera.detect_apriltags()
             for detection in detections:
                 self.vi.think(f"Detected object with tag id {detection['id']}.")
@@ -544,17 +555,18 @@ class Robot:
         """
         This function will retrieve an object from a shelf according to the database
         """
-         # Get the object from the database
-        lab_object: LabObject = self._get_object_from_db(name=object_name)
-        if lab_object is None:
-            self.vi.speak(f"Hmm, {object_name} isn't in the database. I can't retrieve it.")
-            return
+        if type(object_name) != LabObject:
+            # Get the object from the database
+            lab_object: LabObject = self._get_object_from_db(name=object_name)
+            if lab_object is None:
+                self.vi.speak(f"Hmm, {object_name} isn't in the database. I can't retrieve it.")
+                return
 
         # If the object isn't currently at it's home position, fail (not implemented behavior)
         if lab_object.current_position_name != lab_object.last_storage_position:
             self.vi.speak(f"Sorry, I can't retrieve {object_name} right now. It's in use by another scientist.")
 
-        self.move_object(lab_object.current_position_name, lab_object, objective_position)
+        self.move_object(self.database.positions[lab_object.current_position_name], lab_object, objective_position)
 
     def return_to_shelf(self, object_name: str | None):
         """
@@ -711,7 +723,8 @@ class Robot:
         """
         end_position_name = None
         while end_position_name is None:
-            end_position_name = self.vi.ask(f"Happy to help you set up a protocol. What bench position do you want to set up? (Choose from {[self.database.positions.keys()]})")
+            dock_positions = [position.name for position in self.database.positions.values() if position.pos_type == "object_dock"]
+            end_position_name = self.vi.ask(f"Happy to help you set up a protocol. What bench position do you want to set up? (Choose from {dock_positions})")
             if end_position_name not in self.database.positions:
                 if self.vi.reasoning:
                     self.vi.think(f"That position is not in my database, but maybe they misspoke or mistyped. Let me reason about what they might mean.")
@@ -725,7 +738,7 @@ class Robot:
                 continue
 
         end_position = self.database.positions[end_position_name]
-        objects_to_retrieve = self.vi.parse_protocol([self.database.lab_objects.keys()])
+        objects_to_retrieve = self.vi.parse_protocol([lab_object for lab_object in self.database.lab_objects.keys()])
 
         for object_to_retrieve in objects_to_retrieve:
             lab_object: LabObject = self._get_object_from_db(name=object_to_retrieve)
@@ -738,5 +751,5 @@ class Robot:
                 self.vi.speak(f"Sorry, I can't retrieve {object_to_retrieve} right now. It's in use by another scientist.")
                 continue
 
-            self.retrieve_from_shelf(object_to_retrieve, end_position)
+            self.retrieve_from_shelf(lab_object, end_position)
             self.vi.think(f"Retrieved {object_to_retrieve}.")

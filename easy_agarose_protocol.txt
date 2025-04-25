@@ -1,0 +1,4 @@
+Simple Agarose Experiment:
+
+- Pipette 200uL of Agarose into wells A1->A12
+- Celebrate because this was a very easy protocol.

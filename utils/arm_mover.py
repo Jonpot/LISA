@@ -45,15 +45,17 @@ class ArmMover:
         # Common Positions
         self.home = [0.57, 0.00, 0.42, 90, 0, 90] # position 3
         
-        self.position1 = [0.52, 0.00, 0.16, 90, 0, 90]
-        self.position2 = [0.52, -0.15, 0.16, 90, 0, 90]
-        self.position3 = self.home
-        self.position4 = [-0.25, 0.26, 0.06, -90, 180, 90]
-        self.position5 = [-0.25, 0.65, 0.06, -90, 180, 90]
+        self.position1 = [0.59, 0.13, 0.16, 90, 0, 90]
+        self.position2 = [0.59, -0.06, 0.16, 90, 0, 90]
+        self.position3 = [0.59, -0.20, 0.16, 90, 0, 90]
+        self.position4 = [0.59, -0.35, 0.16, 90, 0, 90]
+        self.position5 = self.home
+        self.position6 = [-0.37, 0.37, 0.05, -90, 180, 90]
+        self.position7 = [-0.35, 0.65, 0.05, -90, 180, 90]
         
         
-        self.positions_list = [self.position1, self.position2, self.position3, self.position4, self.position5]
-        self.current_position = 2
+        self.positions_list = [self.position1, self.position2, self.position3, self.position4, self.position5, self.position6, self.position7]
+        self.current_position = 0
 
 
         self.correction_forward_amount = 1000 # this should be fine-tuned experimentally
@@ -143,7 +145,7 @@ class ArmMover:
         success = self._execute_movement(action, blocking)
         return success
     
-    def move_to_pose(self, position: list[int], blocking=True, interval=0.5, duration=10) -> bool:
+    def move_to_pose(self, position: list[int], blocking=True, interval=0.5, duration=10, logging: bool = False) -> bool:
         """
         Move the arm to a pre-defined position
         :param position: list of 6 integers representing the position
@@ -152,39 +154,41 @@ class ArmMover:
         :param duration: total duration in seconds to log the positions
         :return: if the operation was successful
         """
-        log_entries = []
+        if logging:
+            log_entries = []
 
-        def log_positions():
-            start_time = time.time()
-            last_log_time = start_time
-            while time.time() - start_time < duration:
-                current_time = time.time()
-                if current_time - last_log_time >= interval:
-                    # Get the current timestamp with milliseconds
-                    timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            def log_positions():
+                start_time = time.time()
+                last_log_time = start_time
+                while time.time() - start_time < duration:
+                    current_time = time.time()
+                    if current_time - last_log_time >= interval:
+                        # Get the current timestamp with milliseconds
+                        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
 
-                    # Append the dynamically measured robot position and timestamp to the log entries list
-                    log_entries.append([timestamp] + self.robot_position)
+                        # Append the dynamically measured robot position and timestamp to the log entries list
+                        log_entries.append([timestamp] + self.robot_position)
 
-                    # Update the last log time
-                    last_log_time = current_time
+                        # Update the last log time
+                        last_log_time = current_time
 
-        # Start the logging thread
-        logging_thread = threading.Thread(target=log_positions)
-        logging_thread.start()
+            # Start the logging thread
+            logging_thread = threading.Thread(target=log_positions)
+            logging_thread.start()
 
         # Start the movement
-        success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
+        #success = self.arbitrary_cartesian_movement(position[0], position[1], position[2], position[3], position[4], position[5], blocking)
 
-        #success = self.plan_path_to_destination(position, blocking=blocking)
+        success = self.plan_path_to_destination(position, blocking=blocking)
 
-        # Wait for the logging thread to finish
-        logging_thread.join()
+        if logging:
+            # Wait for the logging thread to finish
+            logging_thread.join()
 
-        # Write all log entries to a CSV file after the movement is complete
-        with open('positions_log.csv', mode='a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerows(log_entries)
+            # Write all log entries to a CSV file after the movement is complete
+            with open('positions_log.csv', mode='a', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerows(log_entries)
 
         return success
 
@@ -337,7 +341,8 @@ class ArmMover:
         gripper_command = Base_pb2.GripperCommand()
         finger = gripper_command.gripper.finger.add()
         # Set speed to open gripper
-        print("Setting gripper position using velocity command...")
+        if debug:
+            print("Setting gripper position using velocity command...")
         gripper_command.mode = Base_pb2.GRIPPER_SPEED
 
 
@@ -361,7 +366,8 @@ class ArmMover:
                 gripper_measure = self.robot_connection.base.GetMeasuredGripperMovement(gripper_request)
                 current_value = gripper_measure.finger[0].value
                 if current_value >= value:
-                    print("Gripper closed")
+                    if debug:
+                        print("Gripper closed")
                     # Stop the gripper
                     finger.value = 0
                     self.robot_connection.base.SendGripperCommand(gripper_command)
@@ -413,7 +419,7 @@ class ArmMover:
         """
         Move the robot to the next position in the list
         """
-        self.move_to_pose(self.home)
+        #self.move_to_pose(self.home)
         self.current_position = (self.current_position + 1) % len(self.positions_list)
         self._move_to_current_position()
 
@@ -428,6 +434,7 @@ class ArmMover:
 
         # Try to start at the current position to avoid unnecessary movement
         self._move_to_current_position()
+        time.sleep(0.5)
         detection = camera.detect_apriltag(id, debug=debug)
         if detection is not None:
             return detection
@@ -441,6 +448,7 @@ class ArmMover:
                 return detection
 
             self._move_to_next_position()
+            time.sleep(0.5)
 
         print("Failed to find apriltag in scene.")
         return None
@@ -485,7 +493,7 @@ class ArmMover:
     def approach_apriltag_detection(self,
                                     camera: AprilTagDetector,
                                     detection: dict,
-                                    threshold: float = 280,
+                                    threshold: float = 300,
                                     debug: bool = False) -> bool:
         """
         Approach the apriltag detection
@@ -498,9 +506,9 @@ class ArmMover:
         # Note that what we would call "xyz" the camera calls "yzx"
         x = ((-1 * detection['z']) + 40) * 17 # 17 is a scaling factor determined experimentally. 40 represents the distance from the camera to the tcp
         y = detection['x'] * -1
-        z = detection['y'] * -1
+        z = (detection['y'] * -1)
         while abs(x) > threshold: 
-            if debug:
+            if True:
                 print(f"Approaching apriltag, x: {x}, y: {y}, z: {z}, threshold: {abs(x)} is greater than {threshold}")  
                 print(f"Raw detection: {x, y, z}")
 
@@ -517,7 +525,7 @@ class ArmMover:
                 detection = new_detection
 
                 y = detection['x'] * -1
-                z = detection['y'] * -1
+                z = detection['y'] * -1  + 60 # 10 to make it a little higher for most apriltags
                 x = ((-1 * detection['z']) + 40) * 17 
 
                 num_failed_attempts = 0
@@ -543,6 +551,7 @@ class ArmMover:
         :param detection: Detection information
         :return: If the operation was successful
         """
+        objective_pose = objective_pose.copy() # Copy the list to avoid modifying the original one
         # Move to the apriltag
         num_failed_attempts = 0
         while not self.approach_apriltag_detection(camera, detection, debug=debug):
@@ -629,21 +638,19 @@ class ArmMover:
         return True
 
     import matplotlib.pyplot as plt
+    import numpy as np
+    import matplotlib.pyplot as plt
     def plan_path_to_destination(self, dest: list[float], debug: bool = False, blocking: bool = True) -> bool:
         """
         Plans a safe path from current position to destination avoiding a forbidden ellipse region.
         If the direct path is unsafe, applies a buffer in +y direction and projects waypoints when needed.
         All waypoints receive a +y offset to improve clearance.
         """
-        import numpy as np
-        import matplotlib.pyplot as plt
-
         current_pose = self.robot_position
         forbidden_center, a, b, _, _ = self.calculate_forbidden_ellipse()
-        threshold = 0.075
-        rpy = current_pose[3:6]
+        threshold = 0.275
 
-        def is_safe_line(p1, p2, center, a, b, margin=0.01):
+        def is_safe_line(p1, p2, center, a, b, margin=0.07):
             steps = 20
             for alpha in np.linspace(0, 1, steps):
                 pt = p1 * (1 - alpha) + p2 * alpha
@@ -684,7 +691,7 @@ class ArmMover:
         # Step 2: Start path planning from new pose
         current_pose = self.robot_position
         start = np.array(current_pose[:2])
-        rpy = current_pose[3:6]
+        rpy_dest = dest[3:6]
         waypoints = [start]
 
         if not is_safe_line(start, goal, forbidden_center, a, b):
@@ -707,10 +714,21 @@ class ArmMover:
 
         # Apply +0.05 Y-buffer to all waypoints
         buffered_waypoints = []
+        n = len(waypoints) - 1
         for i, (x, y) in enumerate(waypoints):
             alpha = i / (len(waypoints) - 1)
             z = z0 * (1 - alpha) + z1 * alpha
-            buffered_waypoints.append([x, y , z] + list(rpy))
+            
+            #buffered_waypoints.append([x, y , z] + list(rpy))
+
+            # at every point, the rpy should be the angle facing directly away from the origin
+            rpy = [90, 0, ((np.arctan2(y - forbidden_center[1], x - forbidden_center[0]) * 180 / np.pi) + 90) % 360]
+            
+            buffered_waypoints.append([x, y + 0.05, z] + list(rpy))
+
+        # set the start/destination rpi to the one we want
+        #buffered_waypoints[0][3:6] = rpy_start
+        buffered_waypoints[-1][3:6] = rpy_dest
 
         if debug:
             fig, ax = plt.subplots()
@@ -718,8 +736,8 @@ class ArmMover:
             ax.plot(wp_np[:, 0], wp_np[:, 1], 'y-', label='Planned Path')
             ax.scatter(start[0], start[1], c='g', label='Start', marker='x')
             ax.scatter(goal[0], goal[1] + 0, c='b', label='Goal', marker='x')
-            for i, pt in enumerate(waypoints[1:-1], 1):
-                ax.scatter(pt[0], pt[1] + 0, marker='x', label=f'Waypoint {i}', alpha=0.8)
+            for i, pt in enumerate(buffered_waypoints[1:-1], 1):
+                ax.scatter(pt[0], pt[1] + 0, marker='x', label=f'Waypoint {i}, angle {pt[3:6]}', alpha=0.8)
 
             theta = np.linspace(0, 2 * np.pi, 100)
             xe = forbidden_center[0] + a * np.cos(theta)
@@ -731,6 +749,7 @@ class ArmMover:
             ax.set_title("Path with +Y Buffers & Forbidden Zone Avoidance")
             plt.show()
 
+        print(f"Buffered waypoints: {buffered_waypoints}")
         return self.execute_path(buffered_waypoints, delay=0.01, steps_per_segment=3)
 
 
@@ -791,8 +810,8 @@ class ArmMover:
         Executes the interpolated path.
         Intermediate waypoints are moved non-blockingly, and the final move is blocking to ensure the destination is reached.
         """
-        interpolated_path = self.interpolate_path(waypoints, steps_per_segment)
-        
+        #interpolated_path = self.interpolate_path(waypoints, steps_per_segment)
+        interpolated_path = waypoints  # Use the original waypoints for now
         for point in interpolated_path[:-1]:
             self.arbitrary_cartesian_movement(*point, blocking=True)  # ← non-blocking for smooth motion
             if delay > 0:

@@ -261,7 +261,10 @@ class VerbalInteraction:
             )
             messages.append({"role": "assistant", "content": response.choices[0].message.content})
             try:
-                response_json = eval(response.choices[0].message.content)
+                print("Response:", response.choices[0].message.content)
+                # remove any "```json" or "```" code blocks from the response
+                response_text = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+                response_json = eval(response_text)
                 object_name = response_json.get('object_name')
                 special_handling = response_json.get('special_handling')
                 storage_type = response_json.get('storage_type')
@@ -308,6 +311,7 @@ class VerbalInteraction:
         # Open a GUI to select a PDF file of the protocol
         root = tk.Tk()
         root.withdraw()
+        self.speak("Please select a PDF file of the protocol.")
         file_path = filedialog.askopenfilename(title="Select a PDF file of the protocol", filetypes=[("PDF files", "*.pdf"), ("Text files", "*.txt")])
         if not file_path:
             print("No file selected.")
@@ -346,11 +350,14 @@ class VerbalInteraction:
                 messages=messages
             )
             messages.append({"role": "assistant", "content": response.choices[0].message.content})
+            # strip any "```json" or "```" code blocks from the response
+            response_text = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
+            self.think(f"Response: {response_text}")
             try:
-                object_names = eval(response.choices[0].message.content)
+                object_names = eval(response_text)
             except Exception as e:
                 self.think(f"Error parsing response: {e}")
-                self.think("Response:", response.choices[0].message.content)
+                self.think(f"Response: {response.choices[0].message.content}")
                 messages.append({"role": "user", "content": "I couldn't parse the response as JSON. Please try again. Do not include any other text or explanation."})
                 object_names = []
                 continue
