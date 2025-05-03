@@ -11,15 +11,14 @@ LISA is a symbiotic lab robot built to:
 - Continuously update its internal inventory model even when items are moved by humans.
 
 > “LISA knows where everything is—and helps you put it back.”  
-> — *Capstone Presentation, 2025*:contentReference[oaicite:0]{index=0}
-
+> — *Capstone Presentation, 2025*
 ## 🔧 Key Capabilities
 
 - **Easy Calibration**: Interactive visual setup with lab technicians.
 - **Vision System**: Uses AprilTags now, aiming for YOLO/SAM in future.
-- **Path Planning**: Avoids robot arm self-collision via custom interpolation and forbidden zone detection:contentReference[oaicite:1]{index=1}.
+- **Path Planning**: Avoids robot arm self-collision via custom interpolation and forbidden zone detection.
 - **Protocol Setup**: Reads experimental PDFs and cross-references inventory needs with LIMS.
-- **Analytics**: 97.5% retrieval success rate for small/medium items; 15.2s average retrieval time:contentReference[oaicite:2]{index=2}.
+- **Analytics**: 97.5% retrieval success rate for small/medium items; 15.2s average retrieval time.
 
 ## 📊 Performance Metrics
 
@@ -34,7 +33,7 @@ LISA is a symbiotic lab robot built to:
 
 - Vision struggles with transparent objects.
 - Gripper can't handle large tipboxes/plates.
-- AprilTags are not scalable for production—need segmentation-based vision:contentReference[oaicite:3]{index=3}.
+- AprilTags are not scalable for production—need segmentation-based vision.
 
 ## 🤝 Collaborators
 
